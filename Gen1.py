@@ -2,25 +2,6 @@
 r"""
 Gen1.py — IconMaker Main UI (Dark Neon)
 
-Queue replaced with Library Previewer:
-- Preview thumbnail
-- Name (stem)
-- Icon Path (optional)
-
-Interactions:
-- Double-click preview/name: open source image (preferred over .ico viewing)
-- Right-click menu:
-    Open Source Image
-    Open Icon
-    Delete from Library
-    Copy Source Image
-    Copy Icon
-- Drag & drop files/folders into library list OR anywhere in app:
-    Imports into canonical Icon Images library once per image detected
-- Double-click reset behavior (deterministic):
-    Double-click a library item toggles input selection:
-      - if input already equals item → clear input
-      - else set input to item
 """
 
 from __future__ import annotations
@@ -39,7 +20,6 @@ from StateMemory import StateMemory
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from GenLibrary import LibraryOverlayHost
 import Gen2 as eng
 import GenLog
 import GenOps
@@ -192,22 +172,21 @@ class DropLineEdit(QtWidgets.QLineEdit):
 
     def dragEnterEvent(self, e: QtGui.QDragEnterEvent) -> None:
         if e.mimeData().hasUrls():
-            self._set_drag(True)
             e.acceptProposedAction()
             return
         super().dragEnterEvent(e)
 
     def dragLeaveEvent(self, e: QtGui.QDragLeaveEvent) -> None:
-        self._set_drag(False)
         super().dragLeaveEvent(e)
 
     def dropEvent(self, e: QtGui.QDropEvent) -> None:
-        self._set_drag(False)
         if e.mimeData().hasUrls():
             for u in e.mimeData().urls():
-                self.pathDropped.emit(u.toLocalFile())
-                break
-            return
+                p = u.toLocalFile()
+                if p:
+                    self.pathDropped.emit(p)
+                    e.acceptProposedAction()
+                    return
         super().dropEvent(e)
 
 
@@ -518,12 +497,6 @@ class MainWindow(QtWidgets.QMainWindow):
         # Apply canonical paths BEFORE watchers/UI
         self._set_library_paths(root)
 
-        # --- app event state ---
-        self._last_seen_event_seq = 0
-        self._events_timer = QtCore.QTimer(self)
-        self._events_timer.setInterval(1200)
-        self._events_timer.timeout.connect(self._poll_app_events)
-
         self._app_icon = get_app_icon()
         self.setWindowIcon(self._app_icon)
 
@@ -561,11 +534,8 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception:
             pass
 
-        self._restore_library_overlay_state()
         self._log("Ready.")
         self._lock_output_to_canonical()
-        self._events_timer.start()
-        self._poll_app_events(force=True)
         self._update_mode()
 
         # initialize Run enabled/disabled correctly
@@ -583,176 +553,193 @@ class MainWindow(QtWidgets.QMainWindow):
         self.setCentralWidget(root)
 
         outer = QtWidgets.QVBoxLayout(root)
-        outer.setContentsMargins(14, 14, 14, 14)
+        outer.setContentsMargins(12, 12, 12, 12)
         outer.setSpacing(10)
 
-        # ---------------- HERO ----------------
-        hero = QtWidgets.QFrame()
-        hero.setObjectName("Hero")
+        self.view_stack = QtWidgets.QStackedWidget()
+        outer.addWidget(self.view_stack, 1)
 
-        h = QtWidgets.QHBoxLayout(hero)
-        h.setContentsMargins(18, 16, 18, 16)
-        h.setSpacing(12)
+        # ================= Main page =================
+        self.page_main = QtWidgets.QWidget()
+        self.view_stack.addWidget(self.page_main)
+        main_outer = QtWidgets.QVBoxLayout(self.page_main)
+        main_outer.setContentsMargins(0, 0, 0, 0)
+        main_outer.setSpacing(10)
 
-        # ---- IconMaker image ----
-        self.mark = QtWidgets.QLabel()
-        self.mark.setObjectName("AppMark")
-        self.mark.setFixedSize(HERO_ICON_SIZE, HERO_ICON_SIZE)
-        self.mark.setAlignment(QtCore.Qt.AlignCenter)
+        top_bar = QtWidgets.QFrame()
+        top_bar.setObjectName('Hero')
+        top_row = QtWidgets.QHBoxLayout(top_bar)
+        top_row.setContentsMargins(12, 10, 12, 10)
+        top_row.setSpacing(10)
 
-        pm = get_title_pixmap()
-        if not pm.isNull():
-            self.mark.setPixmap(
-                pm.scaled(
-                    HERO_ICON_SIZE,
-                    HERO_ICON_SIZE,
-                    QtCore.Qt.KeepAspectRatio,
-                    QtCore.Qt.SmoothTransformation
-                )
-            )
+        self.mark = QtWidgets.QLabel('IconMaker')
+        self.mark.setObjectName('HeroTitle')
+        self.mark.setAlignment(QtCore.Qt.AlignVCenter | QtCore.Qt.AlignLeft)
 
-        self.mark.setAlignment(QtCore.Qt.AlignCenter)
-
-        # ---- Sage button ----
-        self.btn_sage = NeonRippleIconButton()
-        self.btn_sage.setToolTip(SAGE_URL)
-        self.btn_sage.set_icon_from_png(SAGE_BUTTON_IMAGE_PATH)
-
-        # ---- Layout ----
-        h.addStretch(1)
-        h.addWidget(self.mark, 0, QtCore.Qt.AlignCenter)
-        h.addStretch(1)
-        h.addWidget(self.btn_sage, 0, QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
-
-        outer.addWidget(hero)
-
-        self.btn_sage.clicked.connect(
-            lambda: QtGui.QDesktopServices.openUrl(QtCore.QUrl(SAGE_URL))
-        )
-
-        # ---------------- TOP PANEL (Run/Cancel/Progress) ----------------
-        top_controls = CardFrame("")
-        top_controls.setObjectName("TopControlsCard")
-        outer.addWidget(top_controls)
-
-        tcl = QtWidgets.QVBoxLayout()
-        tcl.setContentsMargins(0, 0, 0, 0)
-        tcl.setSpacing(10)
-        top_controls.body_layout().addLayout(tcl)
-
-        btn_row = QtWidgets.QHBoxLayout()
-        btn_row.setSpacing(8)
-
-        self.btn_run = NeonCTAButton("Run")
-        self.btn_cancel = QtWidgets.QPushButton("Cancel")
-        self.btn_cancel.setObjectName("CancelBtn")
-        self.btn_cancel.setCursor(QtCore.Qt.PointingHandCursor)
-        self.btn_cancel.setEnabled(False)
-
-        for b in (self.btn_run, self.btn_cancel):
-            b.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
-            b.setMinimumWidth(110)
-            b.setMaximumWidth(140)
-
-        btn_row.addWidget(self.btn_run)
-        btn_row.addWidget(self.btn_cancel)
-        btn_row.addStretch(1)
-        tcl.addLayout(btn_row)
-
-        self.bar = QtWidgets.QProgressBar()
-        self.bar.setRange(0, 100)
-        self.bar.setValue(0)
-
-        self.status_line = QtWidgets.QLabel("Ready.")
-        self.status_line.setObjectName("StatusLine")
-
-        tcl.addWidget(self.bar)
-        tcl.addWidget(self.status_line)
-
-        # ---------------- Body scroll ----------------
-        scroll = QtWidgets.QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
-        outer.addWidget(scroll, 1)
+        self.btn_settings = QtWidgets.QPushButton('Settings')
+        self.btn_settings.setCursor(QtCore.Qt.PointingHandCursor)
+        top_row.addWidget(self.mark)
+        top_row.addStretch(1)
+        top_row.addWidget(self.btn_settings)
+        main_outer.addWidget(top_bar)
 
         body = QtWidgets.QWidget()
-        scroll.setWidget(body)
-
-        main = QtWidgets.QHBoxLayout(body)
-        main.setContentsMargins(0, 0, 0, 0)
-        main.setSpacing(14)
+        body_layout = QtWidgets.QHBoxLayout(body)
+        body_layout.setContentsMargins(0, 0, 0, 0)
+        body_layout.setSpacing(12)
+        main_outer.addWidget(body, 1)
 
         self.main_area = QtWidgets.QWidget()
-        self.main_area.setMinimumWidth(620)
-
+        self.main_area.setMinimumWidth(560)
         left = QtWidgets.QVBoxLayout(self.main_area)
+        left.setContentsMargins(0, 0, 0, 0)
         left.setSpacing(10)
+        body_layout.addWidget(self.main_area, 1)
 
-        main.addWidget(self.main_area, 1)
 
-        self.library_overlay = LibraryOverlayHost(scroll.viewport(), self.main_area, self)
-
-        paths = eng.list_library_images(paths=self.paths)
-        self.library_overlay.refresh(paths)
-
-        self.library_overlay.filesDropped.connect(self._import_paths_to_library)
-        # Source
-        source = CardFrame("Select Image or Folder of Images:")
+        source = CardFrame('')
+        self.source_card = source
         left.addWidget(source)
         sg = QtWidgets.QGridLayout()
-        sg.setHorizontalSpacing(10)
-        sg.setVerticalSpacing(10)
+        sg.setHorizontalSpacing(8)
+        sg.setVerticalSpacing(8)
         source.body_layout().addLayout(sg)
 
         self.mode_seg = SegmentedMode()
         sg.addWidget(self.mode_seg, 0, 0, 1, 3)
 
         self.edit_input = DropLineEdit()
-        self.edit_input.setPlaceholderText("Drop a file/folder here… or click Browse.")
-        self.btn_browse_input = QtWidgets.QPushButton("Browse…")
+        self.edit_input.setPlaceholderText('Select Image…')
+        self.btn_browse_input = QtWidgets.QPushButton('Select Image…')
         self.btn_browse_input.setCursor(QtCore.Qt.PointingHandCursor)
         sg.addWidget(self.edit_input, 1, 0, 1, 2)
         sg.addWidget(self.btn_browse_input, 1, 2)
 
-        self.lbl_drop_hint = QtWidgets.QLabel("Tip: Drag files or folders anywhere into the app to import them.")
-        self.lbl_drop_hint.setObjectName("DropHint")
-        self.lbl_drop_hint.setWordWrap(True)
-        sg.addWidget(self.lbl_drop_hint, 2, 0, 1, 3)
+        self.chk_recursive = QtWidgets.QCheckBox('Recursive')
+        sg.addWidget(self.chk_recursive, 2, 0, 1, 2)
 
-        self.chk_recursive = QtWidgets.QCheckBox("Recursive (subfolders)")
-        sg.addWidget(self.chk_recursive, 3, 0, 1, 2)
+        sage_card = CardFrame('')
+        left.addWidget(sage_card)
+        sage_layout = QtWidgets.QVBoxLayout()
+        sage_layout.setContentsMargins(0, 0, 0, 0)
+        sage_layout.setSpacing(10)
+        sage_card.body_layout().addLayout(sage_layout)
 
-        # Output (fixed)
-        out = CardFrame("Output")
-        left.addWidget(out)
+        self.btn_sage = NeonRippleIconButton()
+        self.btn_sage.setToolTip(SAGE_URL)
+        self.btn_sage.set_icon_from_png(SAGE_BUTTON_IMAGE_PATH)
+        sage_layout.addWidget(self.btn_sage, 0, QtCore.Qt.AlignCenter)
+        self.btn_sage.clicked.connect(lambda: QtGui.QDesktopServices.openUrl(QtCore.QUrl(SAGE_URL)))
 
+        btn_row = QtWidgets.QHBoxLayout()
+        btn_row.setSpacing(8)
+        self.btn_run = NeonCTAButton('Run')
+        self.btn_cancel = QtWidgets.QPushButton('Cancel')
+        self.btn_cancel.setObjectName('CancelBtn')
+        self.btn_cancel.setCursor(QtCore.Qt.PointingHandCursor)
+        self.btn_cancel.setEnabled(False)
+        btn_row.addWidget(self.btn_run)
+        btn_row.addWidget(self.btn_cancel)
+        btn_row.addStretch(1)
+        sage_layout.addLayout(btn_row)
+
+        self.bar = QtWidgets.QProgressBar()
+        self.bar.setRange(0, 100)
+        self.bar.setValue(0)
+        self.status_line = QtWidgets.QLabel('Ready.')
+        self.status_line.setObjectName('StatusLine')
+        sage_layout.addWidget(self.bar)
+        sage_layout.addWidget(self.status_line)
+        left.addStretch(1)
+
+        # ================= Settings page =================
+        self.page_settings = QtWidgets.QWidget()
+        self.view_stack.addWidget(self.page_settings)
+        settings_outer = QtWidgets.QVBoxLayout(self.page_settings)
+        settings_outer.setContentsMargins(0, 0, 0, 0)
+        settings_outer.setSpacing(10)
+
+        settings_header = QtWidgets.QFrame()
+        settings_header.setObjectName('Hero')
+        sh = QtWidgets.QHBoxLayout(settings_header)
+        sh.setContentsMargins(12, 10, 12, 10)
+        sh.setSpacing(10)
+        settings_title = QtWidgets.QLabel('Settings')
+        settings_title.setObjectName('HeroTitle')
+        self.btn_back_settings = QtWidgets.QPushButton('Back')
+        self.btn_back_settings.setCursor(QtCore.Qt.PointingHandCursor)
+        sh.addWidget(settings_title)
+        sh.addStretch(1)
+        sh.addWidget(self.btn_back_settings)
+        settings_outer.addWidget(settings_header)
+
+        settings_body = QtWidgets.QWidget()
+        sb = QtWidgets.QVBoxLayout(settings_body)
+        sb.setContentsMargins(0,0,0,0)
+        sb.setSpacing(10)
+        settings_outer.addWidget(settings_body,1)
+
+        upper = QtWidgets.QWidget()
+        upper_layout = QtWidgets.QHBoxLayout(upper)
+        upper_layout.setContentsMargins(0,0,0,0)
+        upper_layout.setSpacing(10)
+        sb.addWidget(upper,1)
+
+        nav = CardFrame('')
+        nav.setMinimumWidth(120)
+        nav.setMaximumWidth(140)
+        nav_layout = QtWidgets.QVBoxLayout()
+        nav_layout.setContentsMargins(0,0,0,0)
+        nav_layout.setSpacing(8)
+        nav.body_layout().addLayout(nav_layout)
+        self.btn_settings_image = QtWidgets.QPushButton('Image')
+        self.btn_settings_image.setCursor(QtCore.Qt.PointingHandCursor)
+        nav_layout.addWidget(self.btn_settings_image)
+        nav_layout.addStretch(1)
+        upper_layout.addWidget(nav,0)
+
+        self.settings_stack = QtWidgets.QStackedWidget()
+        upper_layout.addWidget(self.settings_stack,1)
+
+        # Library settings page
+        lib_page = QtWidgets.QWidget()
+        lib_layout = QtWidgets.QVBoxLayout(lib_page)
+        lib_layout.setContentsMargins(0,0,0,0)
+        lib_layout.setSpacing(10)
+        self.settings_stack.addWidget(lib_page)
+
+        out = CardFrame('Library')
+        lib_layout.addWidget(out)
         og = QtWidgets.QGridLayout()
         og.setHorizontalSpacing(10)
         og.setVerticalSpacing(10)
         out.body_layout().addLayout(og)
 
         self.lbl_outdir = QtWidgets.QLabel(str(self.paths.icons_dir))
-        self.lbl_outdir.setObjectName("FixedOutPath")
+        self.lbl_outdir.setObjectName('FixedOutPath')
         self.lbl_outdir.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
-
-        self.btn_open_my_icons = QtWidgets.QPushButton("Open My Icons")
+        self.btn_open_my_icons = QtWidgets.QPushButton('Open My Icons')
         self.btn_open_my_icons.setCursor(QtCore.Qt.PointingHandCursor)
-
-        self.btn_open_images = QtWidgets.QPushButton("Open Icon Images")
+        self.btn_open_images = QtWidgets.QPushButton('Open Icon Images')
         self.btn_open_images.setCursor(QtCore.Qt.PointingHandCursor)
-
-        self.btn_change_library = QtWidgets.QPushButton("Change Library Location…")
+        self.btn_change_library = QtWidgets.QPushButton('Change Library Location')
         self.btn_change_library.setCursor(QtCore.Qt.PointingHandCursor)
+        og.addWidget(QtWidgets.QLabel('Icon Output'), 0, 0)
+        og.addWidget(self.lbl_outdir, 0, 1)
+        og.addWidget(self.btn_open_my_icons, 1, 0, 1, 2)
+        og.addWidget(self.btn_open_images, 2, 0, 1, 2)
+        og.addWidget(self.btn_change_library, 3, 0, 1, 2)
+        lib_layout.addStretch(1)
 
-        og.addWidget(QtWidgets.QLabel("Icon Output"), 0, 0)
-        og.addWidget(self.lbl_outdir, 0, 1, 1, 2)
-        og.addWidget(self.btn_open_my_icons, 1, 0, 1, 3)
-        og.addWidget(self.btn_open_images, 2, 0, 1, 3)
-        og.addWidget(self.btn_change_library, 3, 0, 1, 3)
+        # Image settings page
+        img_page = QtWidgets.QWidget()
+        img_layout = QtWidgets.QVBoxLayout(img_page)
+        img_layout.setContentsMargins(0,0,0,0)
+        img_layout.setSpacing(10)
+        self.settings_stack.addWidget(img_page)
 
-        # Options
-        opt = CardFrame("Icon Quality")
-        left.addWidget(opt)
+        opt = CardFrame('Image')
+        img_layout.addWidget(opt)
         g = QtWidgets.QGridLayout()
         g.setHorizontalSpacing(10)
         g.setVerticalSpacing(10)
@@ -760,35 +747,37 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.cmb_quality = QtWidgets.QComboBox()
         self.cmb_quality.setCursor(QtCore.Qt.PointingHandCursor)
-
-        presets = [
-            "16–1024",
-            "16–512",
-            "16–256",
-            "16–128",
-            "16–64",
-            "16–48",
-            "16–32",
-            "16–24",
-            "16–16",
-        ]
+        presets = ['16–1024','16–512','16–256','16–128','16–64','16–48','16–32','16–24','16–16']
         self.cmb_quality.addItems(presets)
-        self.cmb_quality.setCurrentText("16–1024")
-
-        self.chk_overwrite = QtWidgets.QCheckBox("Overwrite Mode")
+        self.cmb_quality.setCurrentText('16–1024')
+        self.chk_overwrite = QtWidgets.QCheckBox('Overwrite Mode')
         self.chk_overwrite.setChecked(True)
-
         self.cmb_padding = QtWidgets.QComboBox()
         self.cmb_padding.addItems(list(eng.PADDING_PRESETS.keys()))
-        self.cmb_padding.setCurrentText("balanced")
-
-        g.addWidget(QtWidgets.QLabel("Quality Preset"), 0, 0)
-        g.addWidget(self.cmb_quality, 0, 1, 1, 3)
-        g.addWidget(QtWidgets.QLabel("Padding"), 1, 0)
+        self.cmb_padding.setCurrentText('balanced')
+        g.addWidget(QtWidgets.QLabel('Quality Preset'), 0, 0)
+        g.addWidget(self.cmb_quality, 0, 1)
+        g.addWidget(QtWidgets.QLabel('Padding'), 1, 0)
         g.addWidget(self.cmb_padding, 1, 1)
-        g.addWidget(self.chk_overwrite, 1, 2, 1, 2)
+        g.addWidget(self.chk_overwrite, 2, 0, 1, 2)
+        img_layout.addStretch(1)
 
-        left.addStretch(1)
+        help_card = CardFrame('Help')
+        help_layout = QtWidgets.QVBoxLayout()
+        help_layout.setContentsMargins(0,0,0,0)
+        help_layout.setSpacing(6)
+        help_card.body_layout().addLayout(help_layout)
+        help_text = QtWidgets.QLabel('Choose Image or Folder, then run. Recursive appears only for folders.')
+        help_text.setWordWrap(True)
+        help_layout.addWidget(help_text)
+        sb.addWidget(help_card, 0)
+
+        self.btn_settings.clicked.connect(lambda: self.view_stack.setCurrentWidget(self.page_settings))
+        self.btn_back_settings.clicked.connect(lambda: self.view_stack.setCurrentWidget(self.page_main))
+        self.btn_settings_image.clicked.connect(lambda: self.settings_stack.setCurrentIndex(0))
+        self.settings_stack.setCurrentIndex(0)
+        self.view_stack.setCurrentWidget(self.page_main)
+
 
     def _apply_theme(self) -> None:
         f = self.font()
@@ -941,32 +930,6 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.mode_seg.modeChanged.connect(self._update_mode)  # type: ignore[arg-type]
 
-        # Library hooks
-        self.library_overlay.itemSelected.connect(self._on_library_item_selected)
-        self.library_overlay.itemActivated.connect(lambda p: self._set_input(str(p)))
-        self.library_overlay.openImageRequested.connect(self._open_library_image)
-        self.library_overlay.openWithRequested.connect(self._open_with_library_image)
-        self.library_overlay.showInFolderRequested.connect(self._show_library_image_in_folder)
-        self.library_overlay.duplicateRequested.connect(self._duplicate_library_image)
-        self.library_overlay.copyImageRequested.connect(self._copy_library_image)
-        self.library_overlay.copyPathRequested.connect(self._copy_library_image_path)
-        self.library_overlay.copyIconRequested.connect(self._copy_library_icon)
-        self.library_overlay.renameRequested.connect(self._rename_library_image)
-        self.library_overlay.deleteRequested.connect(self._delete_library_image)
-        self.library_overlay.openStateChanged.connect(self._save_library_overlay_state)
-
-    def _restore_library_overlay_state(self) -> None:
-        is_open = bool(self._settings.value("ui/library_overlay_open", False, type=bool))
-        try:
-            self.library_overlay.set_open(is_open, animate=False)
-        except Exception:
-            pass
-
-    def _save_library_overlay_state(self, is_open: bool) -> None:
-        try:
-            self._settings.setValue("ui/library_overlay_open", bool(is_open))
-        except Exception:
-            pass
 
     # ---------------- redesign helpers ----------------
     def _lock_output_to_canonical(self) -> None:
@@ -979,13 +942,19 @@ class MainWindow(QtWidgets.QMainWindow):
         try:
             mode = "folder" if self.mode_seg.btn_folder.isChecked() else "file"
         except Exception:
-            mode = "Image"
+            mode = "file"
 
         if mode == "folder":
+            self.chk_recursive.setVisible(True)
             self.chk_recursive.setEnabled(True)
+            self.btn_browse_input.setText('Select Folder…')
+            self.edit_input.setPlaceholderText('Select Folder…')
         else:
             self.chk_recursive.setChecked(False)
+            self.chk_recursive.setVisible(False)
             self.chk_recursive.setEnabled(False)
+            self.btn_browse_input.setText('Select Image…')
+            self.edit_input.setPlaceholderText('Select Image…')
 
     def _update_run_state(self) -> None:
         inp_txt = self.edit_input.text().strip()
@@ -1032,181 +1001,11 @@ class MainWindow(QtWidgets.QMainWindow):
     def _flush_log_pending(self) -> None:
         self._log_pending.clear()
 
-    # ---------------- Import (drop) ----------------
-    def _import_paths_to_library(self, paths: list) -> None:
-        if not paths:
-            return
-
-        img_files = _gather_images_from_paths([Path(p) for p in paths])
-        if not img_files:
-            self._log("Drop import: no valid images detected.", "WARN")
-            return
-
-        imported = 0
-        for img in img_files:
-            try:
-                dst = eng.mirror_copy_to_icon_images(
-                    img,
-                    paths=self.paths,
-                    logfn=lambda s: self._log(s, "INFO")
-                )
-                if dst is not None:
-                    imported += 1
-            except Exception as e:
-                self._log(f"ERR: Import failed: {img}: {type(e).__name__}: {e}", "ERR")
-
-        self._log(f"Drop import finished. images_detected={len(img_files)} imported_or_existing={imported}", "INFO")
-
-        self._run_maintenance_now('library-drop')
-
-    # ---------------- basic actions ----------------
-    def _set_input(self, p: str) -> None:
-        self.edit_input.setText(p)
-        self.mode_seg.set_mode("folder" if Path(p).is_dir() else "file")
-        self._update_mode()
+    def _set_input(self, value: str) -> None:
+        text = str(value or '').strip()
+        self.edit_input.setText(text)
+        self.edit_input.setCursorPosition(len(text))
         self._update_run_state()
-
-    def _on_library_item_selected(self, path: Path) -> None:
-        self.status_line.setText(f"Selected: {Path(path).name}")
-
-    def _open_library_image(self, path: Path) -> None:
-        _open_path(str(path))
-
-    def _open_with_library_image(self, path: Path) -> None:
-        p = Path(path)
-        if not p.exists():
-            return
-        try:
-            if sys.platform.startswith("win"):
-                subprocess.Popen(["rundll32.exe", "shell32.dll,OpenAs_RunDLL", str(p)])
-            else:
-                QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(p)))
-        except Exception as e:
-            self._log(f"WARN: Open With failed: {p} ({e})", "WARN")
-
-    def _show_library_image_in_folder(self, path: Path) -> None:
-        p = Path(path)
-        if not p.exists():
-            return
-        try:
-            if sys.platform.startswith("win"):
-                subprocess.Popen(["explorer", "/select,", str(p)])
-            else:
-                _open_path(str(p.parent))
-        except Exception as e:
-            self._log(f"WARN: Show in Folder failed: {p} ({e})", "WARN")
-
-    def _copy_urls_to_clipboard(self, paths: list[Path]) -> None:
-        mime = QtCore.QMimeData()
-        existing = [Path(p) for p in paths if Path(p).exists()]
-        if not existing:
-            return
-        urls = [QtCore.QUrl.fromLocalFile(str(p)) for p in existing]
-        mime.setUrls(urls)
-        mime.setText("\n".join(str(p) for p in existing))
-        QtWidgets.QApplication.clipboard().setMimeData(mime)
-
-    def _copy_library_image(self, path: Path) -> None:
-        p = Path(path)
-        if not p.exists():
-            return
-        try:
-            self._copy_urls_to_clipboard([p])
-            self._log(f"Copied image: {p.name}")
-        except Exception as e:
-            self._log(f"WARN: Copy Image failed: {p} ({e})", "WARN")
-
-    def _copy_library_image_path(self, path: Path) -> None:
-        p = Path(path)
-        QtWidgets.QApplication.clipboard().setText(str(p))
-        self._log(f"Copied path: {p}")
-
-    def _library_icon_path_for_image(self, path: Path) -> Path:
-        p = Path(path).resolve()
-        try:
-            rel_parent = p.relative_to(self.paths.images_dir).parent
-        except Exception:
-            rel_parent = Path()
-        icon_name = f"{eng.sanitize_piece(p.stem)}.ico"
-        return self.paths.icons_dir / rel_parent / icon_name
-
-    def _copy_library_icon(self, path: Path) -> None:
-        ico = self._library_icon_path_for_image(path)
-        if not ico.exists():
-            self._log(f"WARN: Icon does not exist yet: {ico.name}", "WARN")
-            return
-        try:
-            self._copy_urls_to_clipboard([ico])
-            self._log(f"Copied icon: {ico.name}")
-        except Exception as e:
-            self._log(f"WARN: Copy Icon failed: {ico} ({e})", "WARN")
-
-    def _duplicate_library_image(self, path: Path) -> None:
-        p = Path(path)
-        if not p.exists():
-            return
-        try:
-            dst = eng.unique_path(p.parent / p.name)
-            shutil.copy2(p, dst)
-            self._log(f"Duplicated image: {p.name} -> {dst.name}")
-            self._run_maintenance_now('library-duplicate')
-            self._set_input(str(dst))
-        except Exception as e:
-            self._log(f"ERR: Duplicate failed: {p} ({e})", "ERR")
-
-    def _rename_library_image(self, path: Path) -> None:
-        p = Path(path)
-        if not p.exists():
-            return
-
-        new_stem, ok = QtWidgets.QInputDialog.getText(
-            self,
-            "Rename Image",
-            "New image name:",
-            text=p.stem,
-        )
-        if not ok:
-            return
-
-        new_stem = str(new_stem or "").strip()
-        if not new_stem:
-            return
-
-        desired = p.with_name(f"{new_stem}{p.suffix.lower()}")
-        if desired == p:
-            return
-
-        if desired.exists():
-            QtWidgets.QMessageBox.warning(self, "Rename Image", f"A file already exists with that name:\n\n{desired.name}")
-            return
-
-        try:
-            p.rename(desired)
-            self._log(f"Renamed image: {p.name} -> {desired.name}")
-            self._run_maintenance_now('library-rename')
-            self._set_input(str(desired))
-        except Exception as e:
-            self._log(f"ERR: Rename failed: {p} ({e})", "ERR")
-
-    def _delete_library_image(self, path: Path) -> None:
-        p = Path(path)
-        if not p.exists():
-            return
-        try:
-            moved = False
-            if hasattr(QtCore.QFile, 'moveToTrash'):
-                try:
-                    moved = bool(QtCore.QFile.moveToTrash(str(p)))
-                except TypeError:
-                    moved = bool(QtCore.QFile.moveToTrash(str(p), None))
-            if not moved:
-                p.unlink()
-            self._log(f"Deleted image: {p.name}")
-            if self.edit_input.text().strip() == str(p):
-                self.edit_input.clear()
-            self._run_maintenance_now('library-delete')
-        except Exception as e:
-            self._log(f"ERR: Delete failed: {p} ({e})", "ERR")
 
     def _browse_input(self) -> None:
         mode = "folder" if self.mode_seg.btn_folder.isChecked() else "Image"
@@ -1235,22 +1034,7 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception as e:
             self._log(f"ERR: Maintenance failed: {e}", "ERR")
         finally:
-            self._refresh_library_view()
             self.status_line.setText("Ready.")
-
-    def _refresh_library_view(self) -> None:
-        try:
-            self.library_overlay.refresh(eng.list_library_images(paths=self.paths))
-        except Exception as e:
-            self._log(f"WARN: Library refresh failed: {e}", "WARN")
-
-    def _poll_app_events(self, force: bool = False) -> None:
-        event = GenOps.latest_app_event()
-        if not force and event.seq <= self._last_seen_event_seq:
-            return
-        self._last_seen_event_seq = event.seq
-        if force or event.event_type in {"library-changed", "library-maintained", "library-relocated", "conversion-finished"}:
-            self._refresh_library_view()
 
     def _change_library_location(self) -> None:
         start_dir = str(getattr(self, "LIBRARY_ROOT", Path.home()))
@@ -1290,7 +1074,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._settings.sync()
         self._set_library_paths(new_root)
         self._lock_output_to_canonical()
-        self._refresh_library_view()
         self._log(f"Library relocated to: {new_root}")
         GenOps.publish_app_event("library-relocated", str(new_root))
         if QtWidgets.QMessageBox.question(
@@ -1308,258 +1091,87 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _cancel(self) -> None:
         self._cancel_requested = True
-        self.btn_cancel.setEnabled(False)
-
-        if self._run_proc is not None:
-            try:
-                if self._run_proc.state() != QtCore.QProcess.NotRunning:
-                    self._run_proc.terminate()
-                    QtCore.QTimer.singleShot(
-                        1200,
-                        lambda: self._run_proc.kill()
-                        if self._run_proc is not None and self._run_proc.state() != QtCore.QProcess.NotRunning
-                        else None
-                    )
-            except Exception:
-                pass
-            self._log("Cancel requested (terminating engine process).", "WARN")
-            return
-
         self._log("Cancel requested.", "WARN")
+
+    def _set_run_ui_enabled(self, enabled: bool) -> None:
+        self.btn_run.setEnabled(enabled and bool(self.edit_input.text().strip()))
+        self.edit_input.setEnabled(enabled)
+        self.btn_browse_input.setEnabled(enabled)
+        self.mode_seg.setEnabled(enabled)
+        self.chk_recursive.setEnabled(enabled)
+        self.chk_overwrite.setEnabled(enabled)
+        self.cmb_quality.setEnabled(enabled)
+        self.cmb_padding.setEnabled(enabled)
+        self.btn_cancel.setEnabled(not enabled)
 
     def _run_convert(self) -> None:
         if self._run_in_progress:
             return
-
-        self._cancel_requested = False
-        self.btn_cancel.setEnabled(True)
-        self.bar.setValue(0)
-
         inp_txt = self.edit_input.text().strip()
         if not inp_txt:
             self._log("ERR: No input provided.", "ERR")
-            self.btn_cancel.setEnabled(False)
             return
-
         inp = Path(inp_txt)
         if not inp.exists():
             self._log("ERR: Input path does not exist.", "ERR")
-            self.btn_cancel.setEnabled(False)
             return
-
-        # Lock UI
+        self._cancel_requested = False
         self._run_in_progress = True
-        self.btn_run.setEnabled(False)
-        self.edit_input.setEnabled(False)
-        self.btn_browse_input.setEnabled(False)
-        self.mode_seg.setEnabled(False)
-        self.chk_recursive.setEnabled(False)
-        self.chk_overwrite.setEnabled(False)
-        self.cmb_quality.setEnabled(False)
-        self.cmb_padding.setEnabled(False)
+        self.bar.setValue(0)
         self.status_line.setText("Starting…")
-
-        # Prepare args for Gen2 CLI
-        sizes = preset_sizes(self.cmb_quality.currentText())
-        sizes = [s for s in sizes if 1 <= s <= 1024]
-        if not sizes:
-            sizes = [16, 24, 32, 48, 64, 128, 256, 512, 1024]
-
-        sizes_arg = ",".join(str(s) for s in sizes)
+        self._set_run_ui_enabled(False)
+        sizes = [s for s in preset_sizes(self.cmb_quality.currentText()) if 1 <= s <= 1024] or [16, 24, 32, 48, 64, 128, 256, 512, 1024]
         padding_mode = self.cmb_padding.currentText()
         recursive = self.chk_recursive.isChecked()
         overwrite = self.chk_overwrite.isChecked()
-
-        gen2_path = str(Path(__file__).with_name("Gen2.py"))
-        py = sys.executable
-
-        args = [
-            gen2_path,
-            str(inp),
-            "--out", str(self.paths.icons_dir),
-            "--sizes", sizes_arg,
-            "--padding", padding_mode,
-            "--mirror",
-            "--progress-json",
-        ]
-        if recursive:
-            args.append("--recursive")
-        if not overwrite:
-            args.append("--no-overwrite")
-
-        self._log("=== RUN (engine subprocess) ===", "INFO")
+        self._log("=== RUN ===", "INFO")
         self._log(f"Input: {inp}", "INFO")
         self._log(f"Output (icons): {self.paths.icons_dir}", "INFO")
         self._log(f"Sizes: {sizes}", "INFO")
         self._log(f"Padding: {padding_mode}", "INFO")
         self._log(f"Overwrite: {overwrite} | Recursive: {recursive} | Mirror: True", "INFO")
+        request = GenOps.ConversionRequest(
+            input_path=inp,
+            paths=self.paths,
+            sizes=sizes,
+            padding_mode=padding_mode,
+            recursive=recursive,
+            overwrite=overwrite,
+            keep_alpha=True,
+            autocrop=False,
+            mirror=True,
+        )
+        def progress(done: int, total: int, current: str) -> None:
+            self.status_line.setText(current)
+            self.bar.setValue(int((done * 100) / max(1, total)))
+            QtWidgets.QApplication.processEvents()
+        result = GenOps.run_conversion(request, progress_cb=progress, logfn=lambda s: self._log(s), is_cancelled=lambda: self._cancel_requested)
+        self._run_in_progress = False
+        self._set_run_ui_enabled(True)
+        self.status_line.setText(result.message)
+        if result.ok:
+            self.bar.setValue(100)
+        QtCore.QTimer.singleShot(0, self._update_run_state)
 
-        proc = QtCore.QProcess(self)
-        proc.setProcessChannelMode(QtCore.QProcess.MergedChannels)
-        self._run_proc = proc
-        self._run_proc_buf = ""
-
-        def handle_output() -> None:
-            if self._run_proc is None:
-                return
-            data = bytes(self._run_proc.readAllStandardOutput()).decode("utf-8", "replace")
-            if not data:
-                return
-            self._run_proc_buf += data
-            while "\n" in self._run_proc_buf:
-                line, self._run_proc_buf = self._run_proc_buf.split("\n", 1)
-                line = line.strip()
-                if not line:
-                    continue
-
-                if line.startswith("{") and line.endswith("}"):
-                    try:
-                        obj = json.loads(line)
-                        if obj.get("type") == "progress":
-                            done = int(obj.get("done", 0))
-                            total = int(obj.get("total", 1))
-                            status = str(obj.get("status", ""))
-                            self.status_line.setText(status)
-                            pct = int((done * 100) / max(1, total))
-                            self.bar.setValue(max(0, min(100, pct)))
-                            continue
-                    except Exception:
-                        pass
-
-                lvl = "INFO"
-                if line.startswith("ERR:") or line.startswith("ERROR"):
-                    lvl = "ERR"
-                elif line.startswith("WARN:") or line.startswith("WARNING"):
-                    lvl = "WARN"
-                self._log(line, lvl)
-
-        def finish(ok: bool, final_status: str) -> None:
-            try:
-                if self._run_proc is not None:
-                    self._run_proc.readyReadStandardOutput.disconnect()
-            except Exception:
-                pass
-            try:
-                if self._run_proc is not None:
-                    self._run_proc.finished.disconnect()
-            except Exception:
-                pass
-
-            self._run_proc = None
-            self._run_proc_buf = ""
-            self._run_in_progress = False
-
-            self._log(final_status, "INFO" if ok else "ERR")
-            self.status_line.setText(final_status)
-            if ok:
-                self.bar.setValue(100)
-            self.btn_cancel.setEnabled(False)
-
-            # Re-enable UI
-            self.edit_input.setEnabled(True)
-            self.btn_browse_input.setEnabled(True)
-            self.mode_seg.setEnabled(True)
-            self._update_mode()
-            self.chk_overwrite.setEnabled(True)
-            self.cmb_quality.setEnabled(True)
-            self.cmb_padding.setEnabled(True)
-
-            # Refresh library UI (icons may have been generated)
-            paths = eng.list_library_images(paths=self.paths)
-            self.library_overlay.refresh(paths)
-
-            # Re-evaluate Run button state
-            QtCore.QTimer.singleShot(0, self._update_run_state)
-
-            # If maintenance was requested during run, do it now.
-            if getattr(self, "_maint_pending_reason", None):
-                reason = self._maint_pending_reason
-                self._maint_pending_reason = None
-                QtCore.QTimer.singleShot(0, lambda: self._maintenance_request(reason))
-
-        def on_finished(code: int, status: QtCore.QProcess.ExitStatus) -> None:
-            handle_output()
-
-            if self._cancel_requested:
-                finish(False, "Stopped by cancel.")
-                return
-
-            if status != QtCore.QProcess.NormalExit:
-                finish(False, f"ERR: Engine crashed (ExitStatus={int(status)}) code={code}.")
-                return
-
-            finish(code == 0, f"Done. (engine exit code {code})")
-
-        proc.readyReadStandardOutput.connect(handle_output)
-        proc.finished.connect(on_finished)
-
-        proc.start(py, args)
-        if not proc.waitForStarted(2000):
-            finish(False, "ERR: Failed to start engine subprocess.")
-
-    def showEvent(self, event: QtGui.QShowEvent) -> None:
-        super().showEvent(event)
-        QtCore.QTimer.singleShot(0, lambda: self.library_overlay.sync_to_parent(force=True))
-
-    def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
-        super().resizeEvent(event)
-        QtCore.QTimer.singleShot(0, lambda: self.library_overlay.sync_to_parent(force=True))
-
-    # ---------------- Window-level drag/drop ----------------
     def dragEnterEvent(self, e: QtGui.QDragEnterEvent) -> None:
         if e.mimeData().hasUrls():
+            self.edit_input._set_drag(True)
             e.acceptProposedAction()
             return
         super().dragEnterEvent(e)
 
     def dragLeaveEvent(self, e: QtGui.QDragLeaveEvent) -> None:
+        self.edit_input._set_drag(False)
         super().dragLeaveEvent(e)
 
     def dropEvent(self, e: QtGui.QDropEvent) -> None:
+        self.edit_input._set_drag(False)
         if e.mimeData().hasUrls():
-            paths: list[Path] = []
             for u in e.mimeData().urls():
-                p = u.toLocalFile()
-                if p:
-                    paths.append(Path(p))
-            if paths:
-                self._import_paths_to_library(paths)
-                e.acceptProposedAction()
-                return
-
+                self._set_input(u.toLocalFile())
+                break
+            return
         super().dropEvent(e)
-
-    # ---------------- shutdown ----------------
-    def closeEvent(self, event):
-        proc = getattr(self, "_run_proc", None)
-        if proc is not None:
-            try:
-                proc.finished.disconnect()
-            except Exception:
-                pass
-            try:
-                proc.readyReadStandardOutput.disconnect()
-            except Exception:
-                pass
-            try:
-                proc.readyReadStandardError.disconnect()
-            except Exception:
-                pass
-            self._run_proc = None
-
-        try:
-            self.state.save_from_ui(self)
-        except Exception:
-            pass
-        try:
-            self._settings.setValue("last_quality", self.cmb_quality.currentText())
-            self._settings.setValue("last_padding", self.cmb_padding.currentText())
-            self._settings.sync()
-        except Exception:
-            pass
-
-        super().closeEvent(event)
-
 
 def main() -> None:
     _pre_app_setup()

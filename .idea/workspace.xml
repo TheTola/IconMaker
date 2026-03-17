@@ -1,0 +1,136 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="AutoImportSettings">
+    <option name="autoReloadType" value="SELECTIVE" />
+  </component>
+  <component name="ChangeListManager">
+    <list default="true" id="eb7c0f07-7f6d-4595-a872-39c0ddd0ba35" name="Changes" comment="Added Gen_name and StateMemory modules to harden data integrity, improve&#10;failure transparency, and eliminate repetitive UI setup.&#10;&#10;1) Canonical Filename Enforcement (No Duplicates Policy)&#10;&#10;- Introduced strict canonical name resolution (Unicode NFC + casefold).&#10;- Enforced one-to-one mapping: source image → canonical image → icon.&#10;- If a collision occurs:&#10;    - Incoming file is ignored&#10;    - Warning is logged&#10;    - No renaming, suffixing, or duplicate creation&#10;- Eliminates prior behavior that could generate anime2.png, anime (2).png, etc.&#10;- Ensures rename-safe behavior inside Icon Images library.&#10;&#10;2) Production-Grade Image Discovery Diagnostics&#10;&#10;Replaced shallow “No images found” error with explicit failure mode reporting.&#10;&#10;Now distinguishes:&#10;- Path does not exist&#10;- Unsupported file extension&#10;- Empty directory&#10;- Images exist only in subfolders while recursive is disabled&#10;- Folder contains only unsupported types&#10;&#10;Engine reports WHY zero images were found instead of only stating that none were found.&#10;&#10;3) Persistent UI State (QSettings)&#10;&#10;App now remembers:&#10;- Last selected input path&#10;- Last mode (file vs folder)&#10;- Last output directory&#10;- Recursive flag&#10;- Overwrite flag&#10;- Padding preset&#10;&#10;State restores automatically on startup and auto-saves on interaction.&#10;&#10;Impact:&#10;- Eliminates duplicate image creation&#10;- Hardens data integrity&#10;- Improves professional-grade diagnostics&#10;- Reduces repetitive workflow friction&#10;&#10;Status:&#10;Production-ready behavior for naming, diagnostics, and session persistence.">
+      <change beforePath="$PROJECT_DIR$/.idea/.name" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/.name" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Gen1.py" beforeDir="false" afterPath="$PROJECT_DIR$/Gen1.py" afterDir="false" />
+    </list>
+    <option name="SHOW_DIALOG" value="false" />
+    <option name="HIGHLIGHT_CONFLICTS" value="true" />
+    <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
+    <option name="LAST_RESOLUTION" value="IGNORE" />
+  </component>
+  <component name="Git.Settings">
+    <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
+  </component>
+  <component name="GitHubPullRequestSearchHistory">{
+  &quot;lastFilter&quot;: {
+    &quot;state&quot;: &quot;OPEN&quot;,
+    &quot;assignee&quot;: &quot;TheTola&quot;
+  }
+}</component>
+  <component name="GithubPullRequestsUISettings">{
+  &quot;selectedUrlAndAccountId&quot;: {
+    &quot;url&quot;: &quot;https://github.com/TheTola/Iconner.git&quot;,
+    &quot;accountId&quot;: &quot;b9f9a48b-e717-4dcd-8a8d-9723b8dd031b&quot;
+  }
+}</component>
+  <component name="ProblemsViewState">
+    <option name="selectedTabId" value="ProjectErrors" />
+  </component>
+  <component name="ProjectColorInfo">{
+  &quot;associatedIndex&quot;: 2
+}</component>
+  <component name="ProjectId" id="33IWHmTDi8HPEvSqdZo3T2bLM5l" />
+  <component name="ProjectViewState">
+    <option name="hideEmptyMiddlePackages" value="true" />
+    <option name="showLibraryContents" value="true" />
+  </component>
+  <component name="PropertiesComponent">{
+  &quot;keyToString&quot;: {
+    &quot;ModuleVcsDetector.initialDetectionPerformed&quot;: &quot;true&quot;,
+    &quot;Python.Gen1.executor&quot;: &quot;Run&quot;,
+    &quot;Python.Gen1_FULL_FIXED.executor&quot;: &quot;Run&quot;,
+    &quot;Python.Gen1_compact_sidebar.executor&quot;: &quot;Run&quot;,
+    &quot;Python.Gen1_drawer_version.executor&quot;: &quot;Run&quot;,
+    &quot;Python.Gen2.executor&quot;: &quot;Run&quot;,
+    &quot;Python.Gen3.executor&quot;: &quot;Run&quot;,
+    &quot;Python.GenName.executor&quot;: &quot;Run&quot;,
+    &quot;Python.IconMaker.executor&quot;: &quot;Run&quot;,
+    &quot;Python.IconMakerMaster.executor&quot;: &quot;Run&quot;,
+    &quot;Python.Main.executor&quot;: &quot;Run&quot;,
+    &quot;Python.StateMemory.executor&quot;: &quot;Run&quot;,
+    &quot;Python.faction_prime.executor&quot;: &quot;Run&quot;,
+    &quot;Python.main.executor&quot;: &quot;Run&quot;,
+    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.git.unshallow&quot;: &quot;true&quot;,
+    &quot;com.intellij.ml.llm.matterhorn.ej.ui.settings.DefaultAutoModeForALLUsers.v1&quot;: &quot;true&quot;,
+    &quot;com.intellij.ml.llm.matterhorn.ej.ui.settings.DefaultModelSelectionForGA.v1&quot;: &quot;true&quot;,
+    &quot;git-widget-placeholder&quot;: &quot;master&quot;,
+    &quot;junie.onboarding.icon.badge.shown&quot;: &quot;true&quot;,
+    &quot;last_opened_file_path&quot;: &quot;C:/Users/Oluwatola Ayedun/Desktop/IconMaker&quot;,
+    &quot;run.code.analysis.last.selected.profile&quot;: &quot;pProject Default&quot;,
+    &quot;settings.editor.selected.configurable&quot;: &quot;com.jetbrains.python.configuration.PyActiveSdkModuleConfigurable&quot;,
+    &quot;to.speed.mode.migration.done&quot;: &quot;true&quot;
+  }
+}</component>
+  <component name="SharedIndexes">
+    <attachedChunks>
+      <set>
+        <option value="bundled-python-sdk-1f1b7bcced7d-64d779b69b7a-com.jetbrains.pycharm.pro.sharedIndexes.bundled-PY-251.29188.22" />
+      </set>
+    </attachedChunks>
+  </component>
+  <component name="TaskManager">
+    <task active="true" id="Default" summary="Default task">
+      <changelist id="eb7c0f07-7f6d-4595-a872-39c0ddd0ba35" name="Changes" comment="" />
+      <created>1759004980971</created>
+      <option name="number" value="Default" />
+      <option name="presentableId" value="Default" />
+      <updated>1759004980971</updated>
+    </task>
+    <task id="LOCAL-00001" summary="made a lot of small improvements to the function ality">
+      <option name="closed" value="true" />
+      <created>1770761800176</created>
+      <option name="number" value="00001" />
+      <option name="presentableId" value="LOCAL-00001" />
+      <option name="project" value="LOCAL" />
+      <updated>1770761800176</updated>
+    </task>
+    <task id="LOCAL-00002" summary="made a lot of small improvements to the function ality">
+      <option name="closed" value="true" />
+      <created>1770761814308</created>
+      <option name="number" value="00002" />
+      <option name="presentableId" value="LOCAL-00002" />
+      <option name="project" value="LOCAL" />
+      <updated>1770761814308</updated>
+    </task>
+    <task id="LOCAL-00003" summary="made a lot of small improvements to the function ality">
+      <option name="closed" value="true" />
+      <created>1770762690076</created>
+      <option name="number" value="00003" />
+      <option name="presentableId" value="LOCAL-00003" />
+      <option name="project" value="LOCAL" />
+      <updated>1770762690076</updated>
+    </task>
+    <task id="LOCAL-00004" summary="Added Gen_name and StateMemory modules to harden data integrity, improve&#10;failure transparency, and eliminate repetitive UI setup.&#10;&#10;1) Canonical Filename Enforcement (No Duplicates Policy)&#10;&#10;- Introduced strict canonical name resolution (Unicode NFC + casefold).&#10;- Enforced one-to-one mapping: source image → canonical image → icon.&#10;- If a collision occurs:&#10;    - Incoming file is ignored&#10;    - Warning is logged&#10;    - No renaming, suffixing, or duplicate creation&#10;- Eliminates prior behavior that could generate anime2.png, anime (2).png, etc.&#10;- Ensures rename-safe behavior inside Icon Images library.&#10;&#10;2) Production-Grade Image Discovery Diagnostics&#10;&#10;Replaced shallow “No images found” error with explicit failure mode reporting.&#10;&#10;Now distinguishes:&#10;- Path does not exist&#10;- Unsupported file extension&#10;- Empty directory&#10;- Images exist only in subfolders while recursive is disabled&#10;- Folder contains only unsupported types&#10;&#10;Engine reports WHY zero images were found instead of only stating that none were found.&#10;&#10;3) Persistent UI State (QSettings)&#10;&#10;App now remembers:&#10;- Last selected input path&#10;- Last mode (file vs folder)&#10;- Last output directory&#10;- Recursive flag&#10;- Overwrite flag&#10;- Padding preset&#10;&#10;State restores automatically on startup and auto-saves on interaction.&#10;&#10;Impact:&#10;- Eliminates duplicate image creation&#10;- Hardens data integrity&#10;- Improves professional-grade diagnostics&#10;- Reduces repetitive workflow friction&#10;&#10;Status:&#10;Production-ready behavior for naming, diagnostics, and session persistence.">
+      <option name="closed" value="true" />
+      <created>1770844060989</created>
+      <option name="number" value="00004" />
+      <option name="presentableId" value="LOCAL-00004" />
+      <option name="project" value="LOCAL" />
+      <updated>1770844060989</updated>
+    </task>
+    <option name="localTasksCounter" value="5" />
+    <servers />
+  </component>
+  <component name="VcsManagerConfiguration">
+    <MESSAGE value="made a lot of small improvements to the function ality" />
+    <MESSAGE value="Added Gen_name and StateMemory modules to harden data integrity, improve&#10;failure transparency, and eliminate repetitive UI setup.&#10;&#10;1) Canonical Filename Enforcement (No Duplicates Policy)&#10;&#10;- Introduced strict canonical name resolution (Unicode NFC + casefold).&#10;- Enforced one-to-one mapping: source image → canonical image → icon.&#10;- If a collision occurs:&#10;    - Incoming file is ignored&#10;    - Warning is logged&#10;    - No renaming, suffixing, or duplicate creation&#10;- Eliminates prior behavior that could generate anime2.png, anime (2).png, etc.&#10;- Ensures rename-safe behavior inside Icon Images library.&#10;&#10;2) Production-Grade Image Discovery Diagnostics&#10;&#10;Replaced shallow “No images found” error with explicit failure mode reporting.&#10;&#10;Now distinguishes:&#10;- Path does not exist&#10;- Unsupported file extension&#10;- Empty directory&#10;- Images exist only in subfolders while recursive is disabled&#10;- Folder contains only unsupported types&#10;&#10;Engine reports WHY zero images were found instead of only stating that none were found.&#10;&#10;3) Persistent UI State (QSettings)&#10;&#10;App now remembers:&#10;- Last selected input path&#10;- Last mode (file vs folder)&#10;- Last output directory&#10;- Recursive flag&#10;- Overwrite flag&#10;- Padding preset&#10;&#10;State restores automatically on startup and auto-saves on interaction.&#10;&#10;Impact:&#10;- Eliminates duplicate image creation&#10;- Hardens data integrity&#10;- Improves professional-grade diagnostics&#10;- Reduces repetitive workflow friction&#10;&#10;Status:&#10;Production-ready behavior for naming, diagnostics, and session persistence." />
+    <option name="LAST_COMMIT_MESSAGE" value="Added Gen_name and StateMemory modules to harden data integrity, improve&#10;failure transparency, and eliminate repetitive UI setup.&#10;&#10;1) Canonical Filename Enforcement (No Duplicates Policy)&#10;&#10;- Introduced strict canonical name resolution (Unicode NFC + casefold).&#10;- Enforced one-to-one mapping: source image → canonical image → icon.&#10;- If a collision occurs:&#10;    - Incoming file is ignored&#10;    - Warning is logged&#10;    - No renaming, suffixing, or duplicate creation&#10;- Eliminates prior behavior that could generate anime2.png, anime (2).png, etc.&#10;- Ensures rename-safe behavior inside Icon Images library.&#10;&#10;2) Production-Grade Image Discovery Diagnostics&#10;&#10;Replaced shallow “No images found” error with explicit failure mode reporting.&#10;&#10;Now distinguishes:&#10;- Path does not exist&#10;- Unsupported file extension&#10;- Empty directory&#10;- Images exist only in subfolders while recursive is disabled&#10;- Folder contains only unsupported types&#10;&#10;Engine reports WHY zero images were found instead of only stating that none were found.&#10;&#10;3) Persistent UI State (QSettings)&#10;&#10;App now remembers:&#10;- Last selected input path&#10;- Last mode (file vs folder)&#10;- Last output directory&#10;- Recursive flag&#10;- Overwrite flag&#10;- Padding preset&#10;&#10;State restores automatically on startup and auto-saves on interaction.&#10;&#10;Impact:&#10;- Eliminates duplicate image creation&#10;- Hardens data integrity&#10;- Improves professional-grade diagnostics&#10;- Reduces repetitive workflow friction&#10;&#10;Status:&#10;Production-ready behavior for naming, diagnostics, and session persistence." />
+  </component>
+  <component name="XDebuggerManager">
+    <breakpoint-manager>
+      <default-breakpoints>
+        <breakpoint type="python-exception">
+          <properties notifyOnTerminate="true" exception="BaseException">
+            <option name="notifyOnTerminate" value="true" />
+          </properties>
+        </breakpoint>
+      </default-breakpoints>
+    </breakpoint-manager>
+  </component>
+</project>
