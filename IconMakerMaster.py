@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-IconMaker.py — Unified launcher
+IconMakerMaster.py — Unified launcher
 Runs:
     • Gen1 UI
     • Gen3 tray worker
@@ -10,12 +10,12 @@ Supports modes:
     --mode ui
     --mode tray
 
-Production hardening in this file:
-- single source of truth for app identity/version
-- UI single-instance guard
-- tray single-instance guard
-- deterministic crash logging
-- safer detached tray launch behavior
+Top-level responsibilities in this file:
+- choose UI-only, tray-only, or combined launch mode
+- prepare shared runtime dependencies for source and frozen builds
+- enforce single-instance rules for UI and tray processes
+- record crash details before unexpected shutdown reaches the user
+- spawn the tray worker only from the process that owns the active UI session
 """
 
 from __future__ import annotations
@@ -30,11 +30,13 @@ from pathlib import Path
 from typing import Final, Optional
 
 import GenLog
-
-
-# ============================================================
-# App identity
-# ============================================================
+from AppIdentity import (
+    APP_COPYRIGHT,
+    APP_NAME,
+    APP_ORG,
+    APP_VERSION,
+    apply_qt_application_identity,
+)
 
 
 def _runtime_logger_name() -> str:
@@ -47,29 +49,15 @@ def _log(message: str, *, level: str = "info") -> None:
     except Exception:
         pass
 
-APP_ORG: Final[str] = "InfiniWorks"
-APP_NAME: Final[str] = "IconMaker"
-APP_VERSION: Final[str] = "1.0.0"
-APP_COPYRIGHT: Final[str] = "InfiniWorks"
-
 TRAY_MUTEX_NAME: Final[str] = "Global\\IconMakerTrayMutex"
 UI_MUTEX_NAME: Final[str] = "Global\\IconMakerUiMutex"
 
-
-# ============================================================
-# Runtime patch state
-# ============================================================
 
 _RUNTIME_PATCHED = False
 _CAIRO_PATCHED = False
 _QT_PATCHED = False
 _TRAY_MUTEX_HANDLE: Optional[int] = None
 _UI_MUTEX_HANDLE: Optional[int] = None
-
-
-# ============================================================
-# Windows Cairo DLL patch
-# ============================================================
 
 
 def _patch_cairo_dll_path() -> None:
@@ -95,11 +83,6 @@ def _patch_cairo_dll_path() -> None:
         os.environ["PATH"] = cairo_bin + os.pathsep + current_path
 
     _CAIRO_PATCHED = True
-
-
-# ============================================================
-# Qt plugin path patch
-# ============================================================
 
 
 def _patch_qt_plugin_path() -> None:
@@ -136,12 +119,8 @@ def _patch_qt_plugin_path() -> None:
     _QT_PATCHED = True
 
 
-# ============================================================
-# Shared runtime prep
-# ============================================================
-
-
 def _prepare_runtime() -> None:
+    """Prepare shared runtime dependencies before UI or tray code imports."""
     global _RUNTIME_PATCHED
     if _RUNTIME_PATCHED:
         return
@@ -150,11 +129,6 @@ def _prepare_runtime() -> None:
     _patch_qt_plugin_path()
     _log(f"runtime prepared frozen={is_frozen()} base={app_base_dir()}")
     _RUNTIME_PATCHED = True
-
-
-# ============================================================
-# Argument parsing
-# ============================================================
 
 
 def parse_mode(argv: list[str]) -> str:
@@ -171,16 +145,13 @@ def parse_mode(argv: list[str]) -> str:
     return "both"
 
 
-# ============================================================
-# Runtime helpers
-# ============================================================
-
-
 def is_frozen() -> bool:
+    """Return True when the app is running from a packaged bundle."""
     return getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS")
 
 
 def script_path() -> Path:
+    """Resolve the launcher path even when __file__ is unavailable or redirected."""
     try:
         return Path(__file__).resolve()
     except Exception:
@@ -188,12 +159,14 @@ def script_path() -> Path:
 
 
 def app_base_dir() -> Path:
+    """Return the folder that should be treated as the runtime root."""
     if is_frozen():
         return Path(sys.executable).resolve().parent
     return script_path().parent
 
 
 def crash_log_dir() -> Path:
+    """Use a user-writable crash-log location that survives launcher failures."""
     if os.name == "nt":
         local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
         if local_appdata:
@@ -206,11 +179,6 @@ def _safe_mkdir(path: Path) -> None:
         path.mkdir(parents=True, exist_ok=True)
     except Exception:
         pass
-
-
-# ============================================================
-# Crash logging
-# ============================================================
 
 
 def write_crash_log(exc: BaseException, *, mode: str) -> Path | None:
@@ -246,6 +214,7 @@ def write_crash_log(exc: BaseException, *, mode: str) -> Path | None:
 
 
 def show_fatal_error(message: str, *, title: str = APP_NAME) -> None:
+    """Show a fatal error dialog without assuming the main UI is already running."""
     try:
         from PySide6 import QtWidgets
 
@@ -254,6 +223,7 @@ def show_fatal_error(message: str, *, title: str = APP_NAME) -> None:
         if app is None:
             app = QtWidgets.QApplication(sys.argv)
             owns_app = True
+        apply_qt_application_identity(app)
 
         QtWidgets.QMessageBox.critical(None, title, message)
 
@@ -264,6 +234,7 @@ def show_fatal_error(message: str, *, title: str = APP_NAME) -> None:
 
 
 def run_with_crash_logging(fn, *, mode: str, show_ui_error: bool) -> None:
+    """Run a top-level entry point and persist a crash record for unexpected failures."""
     try:
         fn()
     except SystemExit:
@@ -282,11 +253,6 @@ def run_with_crash_logging(fn, *, mode: str, show_ui_error: bool) -> None:
         raise
 
 
-# ============================================================
-# Single-instance mutex support (Windows)
-# ============================================================
-
-
 def _close_handle(handle: int | None) -> None:
     if os.name != "nt" or not handle:
         return
@@ -301,6 +267,7 @@ def _close_handle(handle: int | None) -> None:
 
 
 def _acquire_named_mutex(name: str) -> int | None:
+    """Return a retained OS mutex handle when this process owns the named slot."""
     if os.name != "nt":
         return 1
 
@@ -371,10 +338,6 @@ def acquire_ui_mutex() -> bool:
     return True
 
 
-# ============================================================
-# Process spawning
-# ============================================================
-
 DETACHED_PROCESS = 0x00000008
 CREATE_NEW_PROCESS_GROUP = 0x00000200
 
@@ -394,21 +357,20 @@ def spawn_detached(args: list[str], cwd: str | None = None) -> None:
 
 
 def tray_command() -> list[str]:
-    """Build the correct tray launch command for frozen and source runs."""
+    """Build the tray-worker launch command for frozen, source, and legacy entry points."""
     if is_frozen():
         return [sys.executable, "--mode", "tray"]
     launcher = script_path()
-    if launcher.name.lower() != 'iconmaker.py':
-        launcher = app_base_dir() / 'IconMaker.py'
+    if launcher.name.lower() not in {'iconmakermaster.py', 'iconmaker.py'}:
+        candidate = app_base_dir() / 'IconMakerMaster.py'
+        if not candidate.exists():
+            candidate = app_base_dir() / 'IconMaker.py'
+        launcher = candidate
     return [sys.executable, str(launcher), "--mode", "tray"]
 
 
-# ============================================================
-# Run targets
-# ============================================================
-
-
 def run_ui() -> None:
+    """Boot the main application window."""
     _prepare_runtime()
     from Gen1 import main as gen1_main
 
@@ -416,15 +378,11 @@ def run_ui() -> None:
 
 
 def run_tray() -> None:
+    """Boot the unattended tray/watch worker."""
     _prepare_runtime()
     from Gen3 import main as gen3_main
 
     run_with_crash_logging(gen3_main, mode="tray", show_ui_error=False)
-
-
-# ============================================================
-# Main launcher
-# ============================================================
 
 
 def _show_already_running_ui_message() -> None:
@@ -450,13 +408,13 @@ def main() -> None:
         run_ui()
         return
 
-    # BOTH (default)
-    # Guard the UI first. If the UI is already running, do not spawn another tray child.
+    # In combined mode the process that wins the UI mutex owns the session and is
+    # the only process allowed to spawn the tray worker. This prevents duplicate
+    # tray children when the user launches the app more than once.
     if not acquire_ui_mutex():
         _show_already_running_ui_message()
         return
 
-    # Spawn the tray only when this launcher owns the UI instance.
     try:
         spawn_detached(tray_command(), cwd=str(app_base_dir()))
     except Exception as e:

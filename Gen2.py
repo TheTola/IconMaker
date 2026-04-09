@@ -1,19 +1,15 @@
-#!/usr/bin/env python3
-# Gen2.py — IconMaker engine (no UI)
-#
-# Primary responsibilities:
-# - Deterministic library locations (Desktop/Icon Images + Desktop/Icon Images/Icons)
-# - Robust image discovery (common raster formats + SVG via CairoSVG)
-# - High-quality multi-size ICO generation (never “sticks” to 16x16)
-# - Rename-safe orphan cleanup (canonical-name aware via Gen_name)
-# - Defensive output handling (out arg can be dir OR explicit .ico path)
-#
-# Professional behavior rules:
-# - overwrite=True means overwrite. Period.
-# - External/original source files must NEVER be moved/renamed/deleted by library import.
-#   Import is copy-only.
-# - Library normalization only touches files already inside the library root.
-# - Library structure is preserved. Images may live in subfolders; icons mirror that structure.
+﻿#!/usr/bin/env python3
+"""
+Core archive-storage and icon-generation engine for IconMaker.
+
+Gen2 owns the filesystem rules for managed archive storage. It knows where
+source images live, where generated icons live, how imports are copied into
+managed storage, and how icon output mirrors the source-image folder layout.
+
+This module deliberately avoids UI concerns. Gen1 and GenArchive present the
+workflow to the user, while Gen2 defines the deterministic behavior that keeps
+archive storage safe, portable, and predictable.
+"""
 
 from __future__ import annotations
 
@@ -27,48 +23,55 @@ from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from PIL import Image, UnidentifiedImageError
 
-# Canonical naming + strict collision policy (Gen_name)
 from GenName import (
-    copy_into_library_strict,
-    move_into_library_strict,
+    copy_into_archive_storage_strict,
+    move_within_archive_storage_strict,
     canonical_key,
     sanitize_piece,
 )
 
-# =========================
-# Engine Paths (NEW)
-# =========================
 
 @dataclass(frozen=True)
 class EnginePaths:
-    library_root: Path
+    """Resolved archive storage layout shared across engine and UI modules."""
+    storage_root: Path
     images_dir: Path
     icons_dir: Path
 
     @classmethod
-    def from_library_root(cls, library_root: Path) -> "EnginePaths":
-        root = Path(library_root).resolve()
+    def from_archive_storage_root(cls, archive_storage_root: Path) -> "EnginePaths":
+        root = Path(archive_storage_root).resolve()
         return cls(
-            library_root=root,
+            storage_root=root,
             images_dir=root / "Icon Images",
-            icons_dir=(root / "Icon Images" / "Icons"),
+            icons_dir=root / "Icon Images" / "Icons",
         )
+
+    @property
+    def library_root(self) -> Path:
+        """Legacy compatibility for older call sites."""
+        return self.storage_root
+
+    @classmethod
+    def from_library_root(cls, library_root: Path) -> "EnginePaths":
+        """Legacy compatibility for older call sites."""
+        return cls.from_archive_storage_root(library_root)
+
 
 __all__ = [
     "IMAGE_EXTS",
     "DEFAULT_SIZES",
     "AUTO_FULL_SIZES",
-    "DEFAULT_LIBRARY_ROOT",
+    "DEFAULT_ARCHIVE_STORAGE_ROOT",
     "DEFAULT_OUTPUT_DIR",
     "PADDING_PRESETS",
     "EnginePaths",
     "default_engine_paths",
     "resolve_engine_paths",
-    "ensure_library_dirs",
-    "list_library_images",
-    "build_library_snapshot",
-    "signal_library_changed",
-    "set_library_root",
+    "ensure_archive_storage_dirs",
+    "list_archive_source_images",
+    "build_archive_snapshot",
+    "set_archive_storage_root",
     "ScanReport",
     "ImageDiscoveryReport",
     "diagnose_image_discovery",
@@ -76,44 +79,50 @@ __all__ = [
     "find_images",
     "make_ico",
     "unique_path",
-    "normalize_icon_images_library",
-    "mirror_copy_to_icon_images",
-    "mirror_copy_to_icon_images_ex",
+    "normalize_archive_source_images",
+    "archive_icon_path_for_source_image",
+    "mirror_copy_to_archive_sources",
+    "mirror_copy_to_archive_sources_ex",
     "list_missing_icon_tasks",
     "convert_many",
-    "scan_icon_images_and_convert",
+    "scan_archive_sources_and_convert",
     "remove_orphan_icons",
 ]
 
-# =========================
-# Standard paths & constants
-# =========================
 
 IMAGE_EXTS: set[str] = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".tif", ".svg"}
 
 DEFAULT_SIZES: List[int] = [16, 24, 32, 48, 64, 128, 256]
 AUTO_FULL_SIZES: List[int] = list(range(8, 1025, 8))
-DEFAULT_LIBRARY_ROOT = Path.home() / "Desktop"
+DEFAULT_ARCHIVE_STORAGE_ROOT = Path.home() / "Desktop"
 
-# Legacy compatibility constants only. Do not use as runtime state.
-_DEFAULT_PATHS = EnginePaths.from_library_root(DEFAULT_LIBRARY_ROOT)
+# These aliases keep older call sites working while newer code relies on
+# EnginePaths instances loaded from the chosen archive storage root.
+_DEFAULT_PATHS = EnginePaths.from_archive_storage_root(DEFAULT_ARCHIVE_STORAGE_ROOT)
 ICON_IMAGES_DIR: Path = _DEFAULT_PATHS.images_dir
 ICONS_DIR: Path = _DEFAULT_PATHS.icons_dir
 
 
 def default_engine_paths() -> EnginePaths:
-    return EnginePaths.from_library_root(DEFAULT_LIBRARY_ROOT)
+    return EnginePaths.from_archive_storage_root(DEFAULT_ARCHIVE_STORAGE_ROOT)
 
 
-def resolve_engine_paths(*, paths: EnginePaths | None = None, library_root: Path | None = None) -> EnginePaths:
+def resolve_engine_paths(
+    *,
+    paths: EnginePaths | None = None,
+    archive_storage_root: Path | None = None,
+    library_root: Path | None = None,
+) -> EnginePaths:
     if paths is not None:
         return paths
-    if library_root is not None:
-        return EnginePaths.from_library_root(library_root)
+    if archive_storage_root is None and library_root is not None:
+        archive_storage_root = library_root
+    if archive_storage_root is not None:
+        return EnginePaths.from_archive_storage_root(archive_storage_root)
     return default_engine_paths()
 
 
-def ensure_library_dirs(paths: EnginePaths | None = None) -> EnginePaths:
+def ensure_archive_storage_dirs(paths: EnginePaths | None = None) -> EnginePaths:
     resolved = resolve_engine_paths(paths=paths)
     for folder in (resolved.images_dir, resolved.icons_dir):
         try:
@@ -123,38 +132,28 @@ def ensure_library_dirs(paths: EnginePaths | None = None) -> EnginePaths:
     return resolved
 
 
-def list_library_images(paths: EnginePaths | None = None):
+def list_archive_source_images(paths: EnginePaths | None = None) -> List[Path]:
     resolved = resolve_engine_paths(paths=paths)
-    return _iter_library_images(paths=resolved, recursive=True)
+    return _iter_archive_source_images(paths=resolved, recursive=True)
 
 
-def build_library_snapshot(paths: EnginePaths | None = None):
+def build_archive_snapshot(paths: EnginePaths | None = None):
     resolved = resolve_engine_paths(paths=paths)
     snapshot = set()
-    for p in _iter_library_images(paths=resolved, recursive=True):
+    for path in _iter_archive_source_images(paths=resolved, recursive=True):
         try:
-            snapshot.add((str(p), p.stat().st_mtime))
+            snapshot.add((str(path), path.stat().st_mtime))
         except Exception:
             pass
     return snapshot
-
-
-def signal_library_changed(paths: EnginePaths | None = None) -> None:
-    resolved = resolve_engine_paths(paths=paths)
-    try:
-        (resolved.images_dir / ".library_changed").touch()
-    except Exception:
-        pass
-
-
-def set_library_root(library_root: Path) -> EnginePaths:
-    """Compatibility shim. Returns resolved paths without mutating module globals."""
-    resolved = EnginePaths.from_library_root(library_root)
-    ensure_library_dirs(resolved)
+def set_archive_storage_root(archive_storage_root: Path) -> EnginePaths:
+    """Return resolved engine paths for the given archive storage root."""
+    resolved = EnginePaths.from_archive_storage_root(archive_storage_root)
+    ensure_archive_storage_dirs(resolved)
     return resolved
 
 
-ensure_library_dirs(default_engine_paths())
+ensure_archive_storage_dirs(default_engine_paths())
 DEFAULT_OUTPUT_DIR = str(default_engine_paths().icons_dir)
 
 PADDING_PRESETS = {
@@ -162,8 +161,8 @@ PADDING_PRESETS = {
     "balanced": 0.88,
     "extra": 0.80,
 }
-
-# Progress callback type
+# Progress callbacks describe work without coupling the engine to any
+# particular UI, tray, or logging surface.
 ProgressCB = Callable[[str, int, int, Optional[Path]], None]
 
 
@@ -195,14 +194,14 @@ def _is_under(child: Path, parent: Path) -> bool:
         return False
 
 
-def _library_quarantine_dir(paths: EnginePaths | None = None, images_dir: Path | None = None) -> Path:
+def _archive_quarantine_dir(paths: EnginePaths | None = None, images_dir: Path | None = None) -> Path:
     if paths is not None:
         base = paths.images_dir
     else:
         base = Path(images_dir) if images_dir is not None else Path(ICON_IMAGES_DIR)
     return base / "_Quarantine"
 
-def _is_reserved_library_path(
+def _is_reserved_archive_path(
     p: Path,
     images_dir: Path | None = None,
     icons_dir: Path | None = None,
@@ -215,7 +214,7 @@ def _is_reserved_library_path(
         base = Path(images_dir) if images_dir is not None else Path(ICON_IMAGES_DIR)
         icons = Path(icons_dir) if icons_dir is not None else Path(ICONS_DIR)
 
-    quarantine = _library_quarantine_dir(paths=paths, images_dir=base)
+    quarantine = _archive_quarantine_dir(paths=paths, images_dir=base)
     temporary = base / "Temporary"
 
     return (
@@ -225,7 +224,7 @@ def _is_reserved_library_path(
     )
 
 
-def _iter_library_images(
+def _iter_archive_source_images(
     paths: EnginePaths | None = None,
     *,
     recursive: bool = True,
@@ -247,7 +246,7 @@ def _iter_library_images(
     for p in iterator:
         if not _is_image_file(p):
             continue
-        if _is_reserved_library_path(p, paths=paths):
+        if _is_reserved_archive_path(p, paths=paths):
             continue
         out.append(p)
     return out
@@ -279,6 +278,10 @@ def _icon_target_for_image(
     out_name = f"{sanitize_piece(img.stem)}{suffix}.ico"
     target_dir = icons / rel_parent
     return target_dir / out_name
+
+
+def archive_icon_path_for_source_image(source_image: Path, *, paths: EnginePaths) -> Path:
+    return _icon_target_for_image(Path(source_image), paths=paths)
 
 
 # =========================
@@ -636,21 +639,21 @@ def make_ico(
 
 
 # =========================
-# Library management (Icon Images)
+# Archive source management (Icon Images)
 # =========================
-def normalize_icon_images_library(
+def normalize_archive_source_images(
     *,
     paths: EnginePaths,
     logfn: Callable[[str], None] | None = None,
 ) -> Tuple[int, int, int]:
     """
-    Normalize image filenames inside ICON_IMAGES_DIR while preserving subfolder structure.
+    Normalize stored source-image filenames while preserving subfolder structure.
 
     Rules:
     - Never flatten subfolders.
     - Never touch Icons/ or _Quarantine/ trees.
     - Canonicalize image filenames in-place inside their current parent folders.
-    - Apply strict collision policy via Gen_name.
+    - Apply strict collision policy via GenName helpers.
     """
     moved = 0
     renamed = 0
@@ -659,14 +662,14 @@ def normalize_icon_images_library(
     base = resolve_engine_paths(paths=paths).images_dir
     base.mkdir(parents=True, exist_ok=True)
 
-    for p in _iter_library_images(paths=paths, recursive=True):
+    for p in _iter_archive_source_images(paths=paths, recursive=True):
         desired = sanitize_piece(p.stem) + p.suffix.lower()
         if p.name == desired:
             continue
 
         _safe_log(logfn, f"NORMALIZE: rename '{p}' -> '{desired}'")
 
-        dst, col = move_into_library_strict(
+        dst, col = move_within_archive_storage_strict(
             p,
             p.parent,
             logfn=logfn,
@@ -681,15 +684,33 @@ def normalize_icon_images_library(
     return moved, renamed, collisions
 
 
-def mirror_copy_to_icon_images(
+def _archive_import_target_dir(
     src: Path,
     *,
     paths: EnginePaths | None = None,
+    source_root: Path | None = None,
+) -> Path:
+    target_images_dir = paths.images_dir if paths is not None else Path(ICON_IMAGES_DIR)
+    if source_root is None:
+        return target_images_dir
+
+    try:
+        rel_parent = Path(src).resolve().relative_to(Path(source_root).resolve()).parent
+    except Exception:
+        return target_images_dir
+    return target_images_dir / rel_parent
+
+
+def mirror_copy_to_archive_sources(
+    src: Path,
+    *,
+    paths: EnginePaths | None = None,
+    source_root: Path | None = None,
     logfn: Callable[[str], None] | None = None,
 ) -> Optional[Path]:
     """
-    Copy-only import into ICON_IMAGES_DIR.
-    External originals are NEVER touched (moved/renamed/deleted) by this call.
+    Copy-only import into managed archive sources.
+    External originals are never touched by this call.
     """
     src = Path(src)
     target_images_dir = paths.images_dir if paths is not None else Path(ICON_IMAGES_DIR)
@@ -700,34 +721,33 @@ def mirror_copy_to_icon_images(
     except Exception:
         pass
 
-    dst, col = copy_into_library_strict(
+    dst, col = copy_into_archive_storage_strict(
         src,
-        target_images_dir,
+        _archive_import_target_dir(src, paths=paths, source_root=source_root),
         logfn=logfn,
     )
 
     if col is not None:
-        _safe_log(logfn, col.message(op="IMPORT"))
+        _safe_log(logfn, f"IMPORT COLLISION: {src.name}")
         return dst
 
     return dst
 
 
-def mirror_copy_to_icon_images_ex(
+def mirror_copy_to_archive_sources_ex(
     src: Path,
     *,
     paths: EnginePaths | None = None,
+    source_root: Path | None = None,
     logfn: Callable[[str], None] | None = None,
 ) -> Tuple[Optional[Path], Optional[str]]:
-    target_images_dir = paths.images_dir if paths is not None else Path(ICON_IMAGES_DIR)
-
-    dst, col = copy_into_library_strict(
+    dst, col = copy_into_archive_storage_strict(
         Path(src),
-        target_images_dir,
+        _archive_import_target_dir(Path(src), paths=paths, source_root=source_root),
         logfn=logfn,
     )
     if col is not None:
-        return dst, col.message(op="IMPORT")
+        return dst, "collision"
     return dst, None
 
 
@@ -762,7 +782,7 @@ def list_missing_icon_tasks(
     except Exception:
         return []
 
-    for img in _iter_library_images(paths=paths, recursive=True):
+    for img in _iter_archive_source_images(paths=paths, recursive=True):
         target = _icon_target_for_image(
             img,
             paths=paths,
@@ -848,7 +868,7 @@ def _scan_counts_only(
     progress_cb: ProgressCB | None,
 ) -> Tuple[int, int, int]:
 
-    images = _iter_library_images(paths=paths, recursive=True)
+    images = _iter_archive_source_images(paths=paths, recursive=True)
     scanned = len(images)
 
     if overwrite:
@@ -911,7 +931,7 @@ def remove_orphan_icons(
         return 0
 
     source_keys: set[str] = set()
-    for img in _iter_library_images(paths=paths, recursive=True):
+    for img in _iter_archive_source_images(paths=paths, recursive=True):
         try:
             source_keys.add(_canonical_relative_file_key(img, images_dir))
         except Exception:
@@ -971,7 +991,7 @@ class ScanReport:
     normalized_moves: int
 
 
-def _scan_icon_images_and_convert_impl(
+def _scan_archive_sources_and_convert_impl(
     *,
     sizes: Optional[Sequence[int]] = None,
     overwrite: bool = True,
@@ -989,12 +1009,12 @@ def _scan_icon_images_and_convert_impl(
 
     _safe_progress(progress_cb, "normalize", 0, 1, None)
     try:
-        moved, renamed, collisions = normalize_icon_images_library(paths=paths, logfn=logfn)
+        moved, renamed, collisions = normalize_archive_source_images(paths=paths, logfn=logfn)
         normalized_moves = moved + renamed
         if collisions:
             _safe_log(logfn, f"Normalize: collisions={collisions} (duplicates skipped/held)")
     except Exception as e:
-        _safe_log(logfn, f"[FATAL] normalize_icon_images_library crashed: {type(e).__name__}: {e}")
+        _safe_log(logfn, f"[FATAL] normalize_archive_source_images crashed: {type(e).__name__}: {e}")
     _safe_progress(progress_cb, "normalize", 1, 1, None)
 
     scanned, converted, errors = _scan_counts_only(
@@ -1030,9 +1050,6 @@ def _scan_icon_images_and_convert_impl(
             f"orphan_removed={orphan_removed} normalized_moves={normalized_moves}"
         ),
     )
-    if converted or orphan_removed or normalized_moves:
-        signal_library_changed(paths=paths)
-
     return ScanReport(
         scanned=scanned,
         converted=converted,
@@ -1042,7 +1059,7 @@ def _scan_icon_images_and_convert_impl(
     )
 
 
-def scan_icon_images_and_convert(
+def scan_archive_sources_and_convert(
     *,
     paths: EnginePaths | None = None,
     sizes: Optional[Sequence[int]] = None,
@@ -1057,7 +1074,7 @@ def scan_icon_images_and_convert(
     progress_cb: ProgressCB | None = None,
 ) -> ScanReport:
     try:
-        return _scan_icon_images_and_convert_impl(
+        return _scan_archive_sources_and_convert_impl(
             paths=paths,
             sizes=sizes,
             overwrite=overwrite,
@@ -1071,7 +1088,7 @@ def scan_icon_images_and_convert(
             progress_cb=progress_cb,
         )
     except Exception as e:
-        _safe_log(logfn, f"[FATAL] scan_icon_images_and_convert crashed: {type(e).__name__}: {e}")
+        _safe_log(logfn, f"[FATAL] scan_archive_sources_and_convert crashed: {type(e).__name__}: {e}")
         return ScanReport(
             scanned=0,
             converted=0,
@@ -1088,7 +1105,14 @@ def scan_icon_images_and_convert(
 def _cli() -> int:
     ap = argparse.ArgumentParser(description="IconMaker engine CLI (Gen2)")
     ap.add_argument("input", nargs="?", default=None, help="Input file or folder")
-    ap.add_argument("--library-root", default=None, help="Library root that contains Icon Images/")
+    ap.add_argument(
+        "--archive-storage-root",
+        "--archive-root",
+        "--library-root",
+        dest="archive_storage_root",
+        default=None,
+        help="Archive storage root that contains Icon Images/",
+    )
     ap.add_argument("--recursive", action="store_true", help="Recursive scan for folder inputs")
     ap.add_argument("--sizes", default="auto", help="Comma list, or 'auto', or 'full'")
     ap.add_argument("--suffix", default="", help="Suffix appended to icon name")
@@ -1098,15 +1122,17 @@ def _cli() -> int:
     ap.add_argument("--autocrop", action="store_true", help="Auto-crop transparent borders")
     ap.add_argument("--padding", default="balanced", choices=list(PADDING_PRESETS.keys()))
 
-    ap.add_argument("--mirror", action="store_true", help="Copy inputs into ICON_IMAGES_DIR before converting")
+    ap.add_argument("--mirror", action="store_true", help="Copy inputs into archive storage before converting")
     ap.add_argument("--progress-json", action="store_true", help="Emit JSON progress lines for UI integration")
-    ap.add_argument("--normalize", action="store_true", help="Normalize Icon Images library first")
+    ap.add_argument("--normalize", action="store_true", help="Normalize stored source images first")
     ap.add_argument("--orphans", action="store_true", help="Remove orphans in output folder")
     ap.add_argument("--orphans-action", default="delete", choices=["delete", "quarantine"])
     args = ap.parse_args()
 
-    paths = resolve_engine_paths(library_root=Path(args.library_root).resolve() if args.library_root else None)
-    ensure_library_dirs(paths)
+    paths = resolve_engine_paths(
+        archive_storage_root=Path(args.archive_storage_root).resolve() if args.archive_storage_root else None
+    )
+    ensure_archive_storage_dirs(paths)
     inp = Path(args.input) if args.input else paths.images_dir
     out = Path(args.out) if args.out else paths.icons_dir
     sizes = parse_sizes(args.sizes)
@@ -1129,7 +1155,7 @@ def _cli() -> int:
 
     if args.normalize:
         try:
-            m, r, c = normalize_icon_images_library(paths=paths, logfn=log)
+            m, r, c = normalize_archive_source_images(paths=paths, logfn=log)
             log(f"Normalize: moved={m} renamed={r} collisions={c}")
         except Exception as e:
             log(f"ERR: Normalize failed: {type(e).__name__}: {e}")
@@ -1145,22 +1171,23 @@ def _cli() -> int:
         return 2
 
     total = len(imgs)
+    import_root = inp if inp.is_dir() else None
 
     for idx, img in enumerate(imgs, start=1):
         src = Path(img)
 
         if args.mirror:
-            emit_progress(idx - 1, total, f"Copying {idx}/{total}: {src.name}", file=str(src))
+            emit_progress(idx - 1, total, f"Importing {idx}/{total}: {src.name}", file=str(src))
             try:
-                mirrored = mirror_copy_to_icon_images(src, paths=paths, logfn=log)
+                mirrored = mirror_copy_to_archive_sources(src, paths=paths, source_root=import_root, logfn=log)
             except Exception as e:
                 failed += 1
-                log(f"ERR: Copy failed: {src}: {type(e).__name__}: {e}")
+                log(f"ERR: Import failed: {src}: {type(e).__name__}: {e}")
                 continue
 
             if not mirrored:
                 skipped += 1
-                log(f"SKIP: Copy skipped: {src}")
+                log(f"SKIP: Import skipped: {src}")
                 continue
 
             src = Path(mirrored)
@@ -1206,3 +1233,4 @@ def _cli() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(_cli())
+

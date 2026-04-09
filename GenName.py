@@ -1,11 +1,11 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
-GenName.py — Canonical Naming + Library Integrity (FINAL)
+GenName.py â€” Canonical Naming + Archive Storage Integrity
 
 - Safe filenames (Windows + ASCII)
 - Deterministic duplicate handling (existing wins)
 - Atomic file operations
-- Minimal, reliable, no engine duplication
+- Minimal, reliable helpers for managed archive storage
 """
 
 from __future__ import annotations
@@ -151,22 +151,22 @@ def _atomic_move(src: Path, dst: Path):
 # Core operations
 # =========================
 
-def copy_into_library_strict(
+def copy_into_archive_storage_strict(
     src: Path,
-    library_dir: Path,
+    archive_dir: Path,
     *,
     logfn: LogFn = None,
 ) -> Tuple[Optional[Path], Optional[str]]:
 
     src = Path(src)
-    library_dir = Path(library_dir)
+    archive_dir = Path(archive_dir)
 
     if not src.exists() or not _is_image(src):
         return None, None
 
-    library_dir.mkdir(parents=True, exist_ok=True)
+    archive_dir.mkdir(parents=True, exist_ok=True)
 
-    dst = library_dir / canonical_filename(src.name)
+    dst = archive_dir / canonical_filename(src.name)
 
     if dst.exists() and not _same_file(src, dst):
         if _is_identical(src, dst):
@@ -185,22 +185,22 @@ def copy_into_library_strict(
         return None, None
 
 
-def move_into_library_strict(
+def move_within_archive_storage_strict(
     src: Path,
-    library_dir: Path,
+    archive_dir: Path,
     *,
     logfn: LogFn = None,
 ) -> Tuple[Optional[Path], Optional[str]]:
 
     src = Path(src)
-    library_dir = Path(library_dir)
+    archive_dir = Path(archive_dir)
 
     if not src.exists() or not _is_image(src):
         return None, None
 
-    library_dir.mkdir(parents=True, exist_ok=True)
+    archive_dir.mkdir(parents=True, exist_ok=True)
 
-    dst = library_dir / canonical_filename(src.name)
+    dst = archive_dir / canonical_filename(src.name)
 
     if dst.exists() and not _same_file(src, dst):
         if _is_identical(src, dst):
@@ -221,3 +221,22 @@ def move_into_library_strict(
     except Exception as e:
         _log(logfn, f"ERR: move failed {src} -> {dst}: {e}")
         return None, None
+
+def copy_into_library_strict(
+    src: Path,
+    library_dir: Path,
+    *,
+    logfn: LogFn = None,
+) -> Tuple[Optional[Path], Optional[str]]:
+    """Compatibility wrapper for older call sites."""
+    return copy_into_archive_storage_strict(src, library_dir, logfn=logfn)
+
+
+def move_into_library_strict(
+    src: Path,
+    library_dir: Path,
+    *,
+    logfn: LogFn = None,
+) -> Tuple[Optional[Path], Optional[str]]:
+    """Compatibility wrapper for older call sites."""
+    return move_within_archive_storage_strict(src, library_dir, logfn=logfn)

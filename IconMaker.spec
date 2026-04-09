@@ -1,12 +1,22 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+from pathlib import Path
+import sys
+
+
+IS_MAC = sys.platform == "darwin"
+ASSETS_DIR = Path("assets")
+WIN_ICON = ASSETS_DIR / "Ico-Ico.ico"
+MAC_ICON = ASSETS_DIR / "IconMaker.icns"
+APP_VERSION = "1.0.0"
+
 
 a = Analysis(
-    ['Gen1.py'],
+    ['IconMakerMaster.py'],
     pathex=[],
     binaries=[],
-    datas=[('assets', 'assets'), ('Gen2.py', '.'), ('Gen4.py', '.'), ('Gen3.py', '.')],
-    hiddenimports=[],
+    datas=[('assets', 'assets')],
+    hiddenimports=['Gen1', 'Gen2', 'Gen3', 'Gen4', 'GenArchive', 'GenLog', 'GenName', 'GenOps', 'StateMemory'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -16,17 +26,12 @@ a = Analysis(
 )
 pyz = PYZ(a.pure)
 
-exe = EXE(
-    pyz,
-    a.scripts,
-    a.binaries,
-    a.datas,
-    [],
+exe_kwargs = dict(
     name='IconMaker',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=not IS_MAC,
     upx_exclude=[],
     runtime_tmpdir=None,
     console=False,
@@ -35,5 +40,40 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['C:\\Users\\Oluwatola Ayedun\\Desktop\\Iconer\\Icon Images\\Icons\\Ico-Ico.ico'],
 )
+
+if IS_MAC and MAC_ICON.exists():
+    exe_kwargs['icon'] = str(MAC_ICON)
+elif WIN_ICON.exists():
+    exe_kwargs['icon'] = [str(WIN_ICON)]
+
+if not IS_MAC:
+    exe_kwargs['version'] = 'IconMaker.versioninfo'
+
+exe = EXE(
+    pyz,
+    a.scripts,
+    a.binaries,
+    a.datas,
+    [],
+    **exe_kwargs,
+)
+
+if IS_MAC:
+    app = BUNDLE(
+        exe,
+        name='IconMaker.app',
+        icon=str(MAC_ICON) if MAC_ICON.exists() else None,
+        bundle_identifier='com.infiniworks.iconmaker',
+        info_plist={
+            'CFBundleName': 'IconMaker',
+            'CFBundleDisplayName': 'IconMaker',
+            'CFBundleIdentifier': 'com.infiniworks.iconmaker',
+            'CFBundleShortVersionString': APP_VERSION,
+            'CFBundleVersion': APP_VERSION,
+            'CFBundlePackageType': 'APPL',
+            'NSHighResolutionCapable': True,
+            'LSMinimumSystemVersion': '11.0',
+            'NSHumanReadableCopyright': 'InfiniWorks',
+        },
+    )

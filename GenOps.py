@@ -1,5 +1,11 @@
-#!/usr/bin/env python3
-"""GenOps.py — non-UI workflows and app coordination for IconMaker."""
+﻿#!/usr/bin/env python3
+"""
+Non-UI workflows and archive-storage coordination for IconMaker.
+
+GenOps sits between the UI/tray layers and the engine. It owns persisted
+archive storage settings, app-event signaling, relocation workflows, and the
+high-level conversion and maintenance entry points used by the rest of the app.
+"""
 
 from __future__ import annotations
 
@@ -15,22 +21,24 @@ from PySide6 import QtCore
 
 import Gen2 as eng
 import GenLog
+from AppIdentity import APP_NAME, APP_ORG
 from Gen2 import EnginePaths, ScanReport
 
-APP_ORG = "InfiniWorks"
-APP_NAME = "IconMaker"
 EVENT_SEQ_KEY = "app_events/seq"
 EVENT_TYPE_KEY = "app_events/type"
 EVENT_DETAIL_KEY = "app_events/detail"
 EVENT_TIME_KEY = "app_events/time"
-PAUSE_KEY = "app_state/library_pause"
-PAUSE_REASON_KEY = "app_state/library_pause_reason"
+ARCHIVE_STORAGE_ROOT_KEY = "archive_storage_root"
+LEGACY_ARCHIVE_ROOT_KEY = "archive_root"
+LEGACY_LIBRARY_ROOT_KEY = "library_root"
+ARCHIVE_STORAGE_PAUSE_KEY = "app_state/archive_storage_pause"
+ARCHIVE_STORAGE_PAUSE_REASON_KEY = "app_state/archive_storage_pause_reason"
 
 ProgressCB = Callable[[int, int, str], None]
 
 
 @dataclass(frozen=True)
-class RelocationResult:
+class ArchiveStorageRelocationResult:
     ok: bool
     verified: bool
     source_deleted: bool
@@ -39,7 +47,7 @@ class RelocationResult:
 
 
 @dataclass(frozen=True)
-class RelocationPlan:
+class ArchiveStorageRelocationPlan:
     source_root: Path
     target_root: Path
     source_files: List[Path]
@@ -79,6 +87,45 @@ def _settings() -> QtCore.QSettings:
     return QtCore.QSettings(APP_ORG, APP_NAME)
 
 
+def load_archive_storage_root(settings: QtCore.QSettings | None = None) -> Path | None:
+    """
+    Load the chosen archive storage root with migration from legacy keys.
+
+    The app now uses archive-specific terminology, but older settings keys are
+    still read and rewritten so existing users keep their configured storage.
+    """
+    s = settings or _settings()
+    for key in (ARCHIVE_STORAGE_ROOT_KEY, LEGACY_ARCHIVE_ROOT_KEY, LEGACY_LIBRARY_ROOT_KEY):
+        raw = str(s.value(key, "") or "").strip()
+        if not raw:
+            continue
+        try:
+            root = Path(raw).resolve()
+        except Exception:
+            continue
+        if key != ARCHIVE_STORAGE_ROOT_KEY:
+            s.setValue(ARCHIVE_STORAGE_ROOT_KEY, str(root))
+            s.sync()
+        return root
+    return None
+
+
+def save_archive_storage_root(path: str | Path, settings: QtCore.QSettings | None = None) -> Path | None:
+    s = settings or _settings()
+    raw = str(path or "").strip()
+    if not raw:
+        for key in (ARCHIVE_STORAGE_ROOT_KEY, LEGACY_ARCHIVE_ROOT_KEY, LEGACY_LIBRARY_ROOT_KEY):
+            s.remove(key)
+        s.sync()
+        return None
+
+    root = Path(raw).resolve()
+    for key in (ARCHIVE_STORAGE_ROOT_KEY, LEGACY_ARCHIVE_ROOT_KEY, LEGACY_LIBRARY_ROOT_KEY):
+        s.setValue(key, str(root))
+    s.sync()
+    return root
+
+
 def _ops_log(message: str, *, paths: EnginePaths | None = None, level: str = "info") -> None:
     base_dir = None if paths is None else paths.images_dir
     try:
@@ -100,7 +147,7 @@ def _iter_all_dirs(root: Path) -> List[str]:
         return []
     out = {str(root)}
     try:
-        for p in root.rglob('*'):
+        for p in root.rglob("*"):
             if p.is_dir():
                 out.add(str(p))
     except Exception:
@@ -108,7 +155,7 @@ def _iter_all_dirs(root: Path) -> List[str]:
     return sorted(out)
 
 
-def build_library_watch_paths(paths: EnginePaths) -> List[str]:
+def build_archive_storage_watch_paths(paths: EnginePaths) -> List[str]:
     try:
         paths.images_dir.mkdir(parents=True, exist_ok=True)
     except Exception:
@@ -116,7 +163,13 @@ def build_library_watch_paths(paths: EnginePaths) -> List[str]:
     return _iter_all_dirs(paths.images_dir)
 
 
-def publish_app_event(event_type: str, detail: str = '') -> AppEvent:
+def publish_app_event(event_type: str, detail: str = "") -> AppEvent:
+    """
+    Publish a single app-wide event through QSettings.
+
+    The UI and tray worker use this lightweight shared channel to coordinate
+    refreshes and status changes without direct process coupling.
+    """
     s = _settings()
     seq = int(s.value(EVENT_SEQ_KEY, 0) or 0) + 1
     ts = time.time()
@@ -132,33 +185,48 @@ def latest_app_event() -> AppEvent:
     s = _settings()
     return AppEvent(
         int(s.value(EVENT_SEQ_KEY, 0) or 0),
-        str(s.value(EVENT_TYPE_KEY, '') or ''),
-        str(s.value(EVENT_DETAIL_KEY, '') or ''),
+        str(s.value(EVENT_TYPE_KEY, "") or ""),
+        str(s.value(EVENT_DETAIL_KEY, "") or ""),
         float(s.value(EVENT_TIME_KEY, 0.0) or 0.0),
     )
 
 
-def set_library_pause(paused: bool, reason: str = '') -> None:
+def set_archive_storage_pause(paused: bool, reason: str = "") -> None:
     s = _settings()
-    s.setValue(PAUSE_KEY, bool(paused))
-    s.setValue(PAUSE_REASON_KEY, reason)
+    s.setValue(ARCHIVE_STORAGE_PAUSE_KEY, bool(paused))
+    s.setValue(ARCHIVE_STORAGE_PAUSE_REASON_KEY, reason)
     s.sync()
-    publish_app_event('library-paused' if paused else 'library-resumed', reason)
+    publish_app_event("archive-storage-paused" if paused else "archive-storage-resumed", reason)
 
 
-def is_library_paused() -> bool:
-    return bool(_settings().value(PAUSE_KEY, False, type=bool))
+def is_archive_storage_paused() -> bool:
+    return bool(_settings().value(ARCHIVE_STORAGE_PAUSE_KEY, False, type=bool))
 
 
 def default_engine_paths() -> EnginePaths:
     try:
         return eng.default_engine_paths()
     except Exception:
-        return EnginePaths.from_library_root(Path.home() / 'Desktop')
+        return EnginePaths.from_archive_storage_root(Path.home() / "Desktop")
 
 
-def run_library_maintenance(*, paths: EnginePaths, overwrite: bool, sizes: Sequence[int], padding_mode: str, autocrop: bool, logfn: Callable[[str], None] | None = None) -> ScanReport:
-    rep = eng.scan_icon_images_and_convert(
+def run_archive_maintenance(
+    *,
+    paths: EnginePaths,
+    overwrite: bool,
+    sizes: Sequence[int],
+    padding_mode: str,
+    autocrop: bool,
+    logfn: Callable[[str], None] | None = None,
+) -> ScanReport:
+    """
+    Run maintenance against managed archive storage.
+
+    Maintenance normalizes source-image names inside managed storage, generates
+    missing or outdated icons, and removes orphaned icons. External originals
+    are never renamed or deleted here.
+    """
+    report = eng.scan_archive_sources_and_convert(
         paths=paths,
         overwrite=overwrite,
         sizes=sizes,
@@ -166,41 +234,57 @@ def run_library_maintenance(*, paths: EnginePaths, overwrite: bool, sizes: Seque
         autocrop=autocrop,
         logfn=logfn,
         remove_orphans=True,
-        orphan_action='delete',
+        orphan_action="delete",
     )
-    _ops_log(f'library maintenance: converted={rep.converted} orphans={rep.orphan_icons_removed} normalized={rep.normalized_moves}', paths=paths)
-    publish_app_event('library-maintained', f'converted={rep.converted};orphans={rep.orphan_icons_removed};normalized={rep.normalized_moves}')
-    return rep
+    _ops_log(
+        f"archive maintenance: converted={report.converted} orphans={report.orphan_icons_removed} normalized={report.normalized_moves}",
+        paths=paths,
+    )
+    publish_app_event(
+        "archive-storage-maintained",
+        f"converted={report.converted};orphans={report.orphan_icons_removed};normalized={report.normalized_moves}",
+    )
+    return report
 
 
-def plan_library_relocation(source_root: Path, target_root: Path) -> RelocationPlan:
+def plan_archive_storage_relocation(source_root: Path, target_root: Path) -> ArchiveStorageRelocationPlan:
     src = Path(source_root).resolve()
     dst = Path(target_root).resolve()
     if not src.exists() or not src.is_dir():
-        raise FileNotFoundError(f'Source root does not exist: {src}')
+        raise FileNotFoundError(f"Archive storage root does not exist: {src}")
     if src == dst:
-        raise ValueError('Source and destination are the same folder.')
+        raise ValueError("Source and destination are the same folder.")
     if str(dst).startswith(str(src) + os.sep):
-        raise ValueError('Destination cannot be inside the current library root.')
+        raise ValueError("Destination cannot be inside the current archive storage root.")
     if str(src).startswith(str(dst) + os.sep):
-        raise ValueError('Destination cannot be a parent of the current library root.')
+        raise ValueError("Destination cannot be a parent of the current archive storage root.")
+
     files: List[Path] = []
     for dirpath, _dirnames, filenames in os.walk(src):
         base = Path(dirpath)
-        for fn in filenames:
-            files.append(base / fn)
-    return RelocationPlan(source_root=src, target_root=dst, source_files=sorted(files))
+        for filename in filenames:
+            files.append(base / filename)
+
+    return ArchiveStorageRelocationPlan(source_root=src, target_root=dst, source_files=sorted(files))
 
 
 def _sha256(path: Path) -> str:
     h = hashlib.sha256()
-    with path.open('rb') as f:
-        for chunk in iter(lambda: f.read(1024 * 1024), b''):
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             h.update(chunk)
     return h.hexdigest()
 
 
-def relocate_library(source_root: Path, target_root: Path, *, overwrite: bool = True, delete_source: bool = True, progress_cb: ProgressCB | None = None, is_cancelled: Callable[[], bool] | None = None) -> RelocationResult:
+def relocate_archive_storage(
+    source_root: Path,
+    target_root: Path,
+    *,
+    overwrite: bool = True,
+    delete_source: bool = True,
+    progress_cb: ProgressCB | None = None,
+    is_cancelled: Callable[[], bool] | None = None,
+) -> ArchiveStorageRelocationResult:
     def cancelled() -> bool:
         if not is_cancelled:
             return False
@@ -210,12 +294,12 @@ def relocate_library(source_root: Path, target_root: Path, *, overwrite: bool = 
             return False
 
     try:
-        set_library_pause(True, 'relocating-library')
-        plan = plan_library_relocation(source_root, target_root)
-    except Exception as e:
-        set_library_pause(False, '')
-        _ops_log(f'relocation setup failed: {type(e).__name__}: {e}', level='error')
-        return RelocationResult(False, False, False, 0, str(e))
+        set_archive_storage_pause(True, "relocating-archive-storage")
+        plan = plan_archive_storage_relocation(source_root, target_root)
+    except Exception as exc:
+        set_archive_storage_pause(False, "")
+        _ops_log(f"relocation setup failed: {type(exc).__name__}: {exc}", level="error")
+        return ArchiveStorageRelocationResult(False, False, False, 0, str(exc))
 
     total = len(plan.source_files)
     copied = 0
@@ -223,39 +307,49 @@ def relocate_library(source_root: Path, target_root: Path, *, overwrite: bool = 
         plan.target_root.mkdir(parents=True, exist_ok=True)
         for src_file in plan.source_files:
             if cancelled():
-                return RelocationResult(False, False, False, copied, 'Cancelled.')
+                return ArchiveStorageRelocationResult(False, False, False, copied, "Cancelled.")
             rel = src_file.relative_to(plan.source_root)
             dst_file = plan.target_root / rel
             dst_file.parent.mkdir(parents=True, exist_ok=True)
             if dst_file.exists() and not overwrite:
-                return RelocationResult(False, False, False, copied, f'Destination exists: {dst_file}')
+                return ArchiveStorageRelocationResult(False, False, False, copied, f"Destination exists: {dst_file}")
             shutil.copy2(src_file, dst_file)
             copied += 1
             _safe_progress(progress_cb, copied, total, str(src_file))
+
         for src_file in plan.source_files:
             if cancelled():
-                return RelocationResult(False, False, False, copied, 'Cancelled during verification.')
+                return ArchiveStorageRelocationResult(False, False, False, copied, "Cancelled during verification.")
             rel = src_file.relative_to(plan.source_root)
             dst_file = plan.target_root / rel
             if not dst_file.exists():
-                return RelocationResult(False, False, False, copied, f'Verification failed: missing {dst_file}')
+                return ArchiveStorageRelocationResult(False, False, False, copied, f"Verification failed: missing {dst_file}")
             if src_file.stat().st_size != dst_file.stat().st_size:
-                return RelocationResult(False, False, False, copied, f'Verification failed: size mismatch for {rel}')
+                return ArchiveStorageRelocationResult(False, False, False, copied, f"Verification failed: size mismatch for {rel}")
             if _sha256(src_file) != _sha256(dst_file):
-                return RelocationResult(False, False, False, copied, f'Verification failed: content mismatch for {rel}')
+                return ArchiveStorageRelocationResult(False, False, False, copied, f"Verification failed: content mismatch for {rel}")
+
         if delete_source:
             shutil.rmtree(plan.source_root)
-        publish_app_event('library-relocated', str(plan.target_root))
-        _ops_log(f'relocation complete: {plan.source_root} -> {plan.target_root} files={copied}', level='info')
-        return RelocationResult(True, True, delete_source, copied, 'Relocation verified.')
-    except Exception as e:
-        _ops_log(f'relocation failed after {copied} files: {type(e).__name__}: {e}', level='error')
-        return RelocationResult(False, False, False, copied, str(e))
+
+        save_archive_storage_root(plan.target_root)
+        publish_app_event("archive-storage-relocated", str(plan.target_root))
+        _ops_log(f"archive storage relocation complete: {plan.source_root} -> {plan.target_root} files={copied}")
+        return ArchiveStorageRelocationResult(True, True, delete_source, copied, "Archive storage relocation verified.")
+    except Exception as exc:
+        _ops_log(f"relocation failed after {copied} files: {type(exc).__name__}: {exc}", level="error")
+        return ArchiveStorageRelocationResult(False, False, False, copied, str(exc))
     finally:
-        set_library_pause(False, '')
+        set_archive_storage_pause(False, "")
 
 
-def run_conversion(request: ConversionRequest, *, progress_cb: ProgressCB | None = None, logfn: Callable[[str], None] | None = None, is_cancelled: Callable[[], bool] | None = None) -> ConversionResult:
+def run_conversion(
+    request: ConversionRequest,
+    *,
+    progress_cb: ProgressCB | None = None,
+    logfn: Callable[[str], None] | None = None,
+    is_cancelled: Callable[[], bool] | None = None,
+) -> ConversionResult:
     def cancelled() -> bool:
         if not is_cancelled:
             return False
@@ -264,53 +358,63 @@ def run_conversion(request: ConversionRequest, *, progress_cb: ProgressCB | None
         except Exception:
             return False
 
-    inp = Path(request.input_path)
-    if not inp.exists():
-        _ops_log(f'conversion input missing: {inp}', paths=request.paths, level='error')
-        return ConversionResult(False, 0, 0, 0, 'ERR: Input path does not exist.')
+    input_path = Path(request.input_path)
+    if not input_path.exists():
+        _ops_log(f"conversion input missing: {input_path}", paths=request.paths, level="error")
+        return ConversionResult(False, 0, 0, 0, "ERR: Input path does not exist.")
 
-    imgs = eng.find_images(inp, recursive=request.recursive)
-    if not imgs:
-        rep = eng.diagnose_image_discovery(inp, recursive=request.recursive)
+    images = eng.find_images(input_path, recursive=request.recursive)
+    if not images:
+        report = eng.diagnose_image_discovery(input_path, recursive=request.recursive)
         if logfn:
-            logfn(f'ERR: No images found. Total scanned={rep.found_total} images={rep.found_images}')
-            for k, v in sorted(rep.skipped_reason_counts.items()):
-                logfn(f'  skipped[{k}]={v}')
-            for p, reason in rep.sample_skipped:
-                logfn(f'  sample-skip: {p} ({reason})')
-        return ConversionResult(False, 0, 0, 0, 'ERR: No images found.')
+            logfn(f"ERR: No images found. Total scanned={report.found_total} images={report.found_images}")
+            for key, value in sorted(report.skipped_reason_counts.items()):
+                logfn(f"  skipped[{key}]={value}")
+            for path, reason in report.sample_skipped:
+                logfn(f"  sample-skip: {path} ({reason})")
+        return ConversionResult(False, 0, 0, 0, "ERR: No images found.")
 
-    ok = 0
+    converted = 0
     skipped = 0
     failed = 0
-    total = len(imgs)
-    for idx, img in enumerate(imgs, start=1):
+    total = len(images)
+    import_root = input_path if input_path.is_dir() else None
+
+    for idx, image in enumerate(images, start=1):
         if cancelled():
-            return ConversionResult(False, ok, skipped, failed, 'Stopped by cancel.')
-        src = Path(img)
-        current_status = f'Converting {idx}/{total}: {src.name}'
+            return ConversionResult(False, converted, skipped, failed, "Stopped by cancel.")
+
+        source_image = Path(image)
+        current_status = f"Converting {idx}/{total}: {source_image.name}"
         if request.mirror:
-            _safe_progress(progress_cb, idx - 1, total, f'Copying {idx}/{total}: {src.name}')
+            _safe_progress(progress_cb, idx - 1, total, f"Importing {idx}/{total}: {source_image.name}")
             try:
-                mirrored = eng.mirror_copy_to_icon_images(src, paths=request.paths, logfn=logfn)
-            except Exception as e:
+                mirrored = eng.mirror_copy_to_archive_sources(
+                    source_image,
+                    paths=request.paths,
+                    source_root=import_root,
+                    logfn=logfn,
+                )
+            except Exception as exc:
                 failed += 1
                 if logfn:
-                    logfn(f'ERR: Copy failed: {src}: {type(e).__name__}: {e}')
+                    logfn(f"ERR: Import failed: {source_image}: {type(exc).__name__}: {exc}")
                 continue
+
             if cancelled():
-                return ConversionResult(False, ok, skipped, failed, 'Stopped by cancel.')
+                return ConversionResult(False, converted, skipped, failed, "Stopped by cancel.")
             if not mirrored:
                 skipped += 1
                 if logfn:
-                    logfn(f'SKIP: Copy skipped: {src}')
+                    logfn(f"SKIP: Import skipped: {source_image}")
                 continue
-            src = Path(mirrored)
-            current_status = f'Converting {idx}/{total}: {src.name}'
+            source_image = Path(mirrored)
+            current_status = f"Converting {idx}/{total}: {source_image.name}"
+
         _safe_progress(progress_cb, idx, total, current_status)
         try:
-            res_ok, msg = eng.make_ico(
-                src,
+            ok, message = eng.make_ico(
+                source_image,
                 request.paths.icons_dir,
                 sizes=request.sizes,
                 overwrite=request.overwrite,
@@ -319,20 +423,22 @@ def run_conversion(request: ConversionRequest, *, progress_cb: ProgressCB | None
                 padding_mode=request.padding_mode,
                 logfn=logfn,
             )
-        except Exception as e:
-            res_ok = False
-            msg = f'ERR: make_ico crashed for {src}: {type(e).__name__}: {e}'
+        except Exception as exc:
+            ok = False
+            message = f"ERR: make_ico crashed for {source_image}: {type(exc).__name__}: {exc}"
             if logfn:
-                logfn(msg)
-        if res_ok and str(msg).startswith('SKIP:'):
+                logfn(message)
+
+        if ok and str(message).startswith("SKIP:"):
             skipped += 1
-        elif res_ok:
-            ok += 1
+        elif ok:
+            converted += 1
         else:
             failed += 1
-    message = f'Done: ok={ok} skipped={skipped} failed={failed}'
+
+    message = f"Done: ok={converted} skipped={skipped} failed={failed}"
     if logfn:
         logfn(message)
-    _ops_log(f'conversion finished: {message}', paths=request.paths)
-    publish_app_event('conversion-finished', message)
-    return ConversionResult(failed == 0, ok, skipped, failed, message)
+    _ops_log(f"conversion finished: {message}", paths=request.paths)
+    publish_app_event("conversion-finished", message)
+    return ConversionResult(failed == 0, converted, skipped, failed, message)
