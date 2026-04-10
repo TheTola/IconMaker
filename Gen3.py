@@ -202,11 +202,12 @@ class TrayAgent(QtWidgets.QSystemTrayIcon):
         self.setToolTip(f"{APP_DISPLAY_VERSION} - background agent")
         self._scan_busy = False
         self._scan_pending = False
+        self._last_seen_event_seq = 0
         self.menu = QtWidgets.QMenu()
         self.menu.addAction("Open IconMaker", self.open_gen1)
         self.menu.addSeparator()
         self.menu.addAction("Scan Now", self._scan_now)
-        self.menu.addAction("Quit IconMaker", QtWidgets.QApplication.quit)
+        self.menu.addAction("Quit IconMaker", self._quit_all)
         self.setContextMenu(self.menu)
         self.activated.connect(self._on_click)
         self._debounce = QtCore.QTimer(self)
@@ -217,9 +218,14 @@ class TrayAgent(QtWidgets.QSystemTrayIcon):
         self._periodic = QtCore.QTimer(self)
         self._periodic.setInterval(SCAN_INTERVAL_MS)
         self._periodic.timeout.connect(self._scan_now)
+        self._event_timer = QtCore.QTimer(self)
+        self._event_timer.setInterval(900)
+        self._event_timer.timeout.connect(self._poll_app_events)
         self._attach_watch()
         self._periodic.start()
+        self._event_timer.start()
         QtCore.QTimer.singleShot(1000, self._scan_now)
+        QtCore.QTimer.singleShot(250, lambda: self._poll_app_events(force=True))
         self.show()
 
     def _watch_paths(self) -> List[str]:
@@ -277,6 +283,26 @@ class TrayAgent(QtWidgets.QSystemTrayIcon):
         if reason == QtWidgets.QSystemTrayIcon.Trigger and self.contextMenu():
             self.contextMenu().popup(QtGui.QCursor.pos())
 
+    def _quit_all(self) -> None:
+        """Exit both the tray worker and any running UI through the shared app-event channel."""
+        GenOps.publish_app_event("quit-all", "tray-menu")
+        app = QtWidgets.QApplication.instance()
+        if app is not None:
+            app.quit()
+
+    def _poll_app_events(self, force: bool = False) -> None:
+        event = GenOps.latest_app_event()
+        if not force and event.seq <= self._last_seen_event_seq:
+            return
+        self._last_seen_event_seq = event.seq
+        if not force and event.event_type == "quit-all":
+            app = QtWidgets.QApplication.instance()
+            if app is not None:
+                app.quit()
+            return
+        if force or event.event_type == "archive-storage-relocated":
+            self._attach_watch()
+
     def _run_detached(self, argv: List[str]) -> bool:
         try:
             if sys.platform.startswith("win"):
@@ -307,6 +333,7 @@ class TrayAgent(QtWidgets.QSystemTrayIcon):
 
 def main() -> None:
     _pre_app_setup()
+    GenOps.apply_launch_tray_at_startup()
     try:
         _archive_sources_dir().mkdir(parents=True, exist_ok=True)
         _generated_icons_dir().mkdir(parents=True, exist_ok=True)

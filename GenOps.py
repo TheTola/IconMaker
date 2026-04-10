@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,8 +32,10 @@ EVENT_TIME_KEY = "app_events/time"
 ARCHIVE_STORAGE_ROOT_KEY = "archive_storage_root"
 LEGACY_ARCHIVE_ROOT_KEY = "archive_root"
 LEGACY_LIBRARY_ROOT_KEY = "library_root"
+STARTUP_TRAY_ENABLED_KEY = "startup/launch_tray"
 ARCHIVE_STORAGE_PAUSE_KEY = "app_state/archive_storage_pause"
 ARCHIVE_STORAGE_PAUSE_REASON_KEY = "app_state/archive_storage_pause_reason"
+WINDOWS_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
 ProgressCB = Callable[[int, int, str], None]
 
@@ -124,6 +127,70 @@ def save_archive_storage_root(path: str | Path, settings: QtCore.QSettings | Non
         s.setValue(key, str(root))
     s.sync()
     return root
+
+
+def load_launch_tray_at_startup(settings: QtCore.QSettings | None = None) -> bool:
+    """Return whether the tray should register itself to launch at Windows startup."""
+    s = settings or _settings()
+    return bool(s.value(STARTUP_TRAY_ENABLED_KEY, True, type=bool))
+
+
+def save_launch_tray_at_startup(enabled: bool, settings: QtCore.QSettings | None = None) -> None:
+    """Persist the user's startup preference for the tray worker."""
+    s = settings or _settings()
+    s.setValue(STARTUP_TRAY_ENABLED_KEY, bool(enabled))
+    s.sync()
+
+
+def _startup_launcher_command() -> str:
+    """
+    Build the startup command that launches only the tray worker.
+
+    Frozen runs use the packaged executable. Source runs fall back to the local
+    Python interpreter plus the project launcher so development sessions can
+    still exercise startup behavior.
+    """
+    if getattr(sys, "frozen", False):
+        return f'"{Path(sys.executable).resolve()}" --mode tray'
+
+    base = Path(__file__).resolve().parent
+    launcher = base / "IconMakerMaster.py"
+    if not launcher.exists():
+        launcher = base / "IconMaker.py"
+    return f'"{Path(sys.executable).resolve()}" "{launcher.resolve()}" --mode tray'
+
+
+def apply_launch_tray_at_startup(
+    enabled: bool | None = None,
+    settings: QtCore.QSettings | None = None,
+) -> bool:
+    """
+    Apply the saved startup preference to the current platform.
+
+    On Windows this writes or removes the current-user Run entry so the tray
+    worker opens automatically at login. Other platforms keep the preference
+    persisted without attempting platform-specific registration here.
+    """
+    s = settings or _settings()
+    should_enable = load_launch_tray_at_startup(s) if enabled is None else bool(enabled)
+    if os.name != "nt":
+        return True
+
+    try:
+        import winreg
+
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, WINDOWS_RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
+            if should_enable:
+                winreg.SetValueEx(key, APP_NAME, 0, winreg.REG_SZ, _startup_launcher_command())
+            else:
+                try:
+                    winreg.DeleteValue(key, APP_NAME)
+                except FileNotFoundError:
+                    pass
+        return True
+    except Exception as exc:
+        _ops_log(f"startup registration failed: {type(exc).__name__}: {exc}", level="error")
+        return False
 
 
 def _ops_log(message: str, *, paths: EnginePaths | None = None, level: str = "info") -> None:

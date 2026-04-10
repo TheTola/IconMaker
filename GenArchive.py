@@ -52,16 +52,33 @@ class ArchiveHandleLabel(QtWidgets.QLabel):
     clicked = QtCore.Signal()
 
     def __init__(self, text: str = "", parent=None):
-        super().__init__(text, parent)
+        super().__init__("", parent)
         self.setAlignment(QtCore.Qt.AlignCenter)
+        self.setAttribute(QtCore.Qt.WA_StyledBackground, True)
+        self._word = self._normalize_word(text)
+        self._expanded = False
+
+    @staticmethod
+    def _normalize_word(text: str) -> str:
+        letters = "".join(ch for ch in str(text or "") if ch.isalpha())
+        return letters.upper() or "ARCHIVE"
+
+    def set_word(self, text: str) -> None:
+        self._word = self._normalize_word(text)
+        self.update()
+
+    def set_expanded(self, expanded: bool) -> None:
+        self._expanded = bool(expanded)
+        self.update()
 
     def sizeHint(self):
-        size = super().sizeHint()
-        return QtCore.QSize(size.height(), size.width())
+        fm = self.fontMetrics()
+        line_height = fm.height()
+        min_width = fm.horizontalAdvance("<") + fm.horizontalAdvance("W") + 16
+        return QtCore.QSize(max(COLLAPSED_WIDTH, min_width), line_height * len(self._word) + 16)
 
     def minimumSizeHint(self):
-        size = super().minimumSizeHint()
-        return QtCore.QSize(size.height(), size.width())
+        return self.sizeHint()
 
     def mousePressEvent(self, event):
         if event.button() == QtCore.Qt.LeftButton:
@@ -71,10 +88,38 @@ class ArchiveHandleLabel(QtWidgets.QLabel):
     def paintEvent(self, event):
         painter = QtGui.QPainter(self)
         painter.setRenderHint(QtGui.QPainter.Antialiasing)
-        painter.translate(self.width(), 0)
-        painter.rotate(90)
-        rect = QtCore.QRect(0, 0, self.height(), self.width())
-        painter.drawText(rect, QtCore.Qt.AlignCenter, self.text())
+        painter.setRenderHint(QtGui.QPainter.TextAntialiasing)
+
+        option = QtWidgets.QStyleOption()
+        option.initFrom(self)
+        self.style().drawPrimitive(QtWidgets.QStyle.PE_Widget, option, painter, self)
+
+        font = painter.font()
+        font.setBold(True)
+        painter.setFont(font)
+        painter.setPen(QtGui.QColor(234, 242, 255, 220))
+
+        letters = list(self._word)
+        if not letters:
+            return
+
+        fm = painter.fontMetrics()
+        line_height = fm.height()
+        total_height = len(letters) * line_height
+        top = max(6, (self.height() - total_height) // 2)
+        arrow = "<" if self._expanded else ">"
+        arrow_width = max(10, self.width() // 3)
+        letter_width = max(12, self.width() - arrow_width - 2)
+        middle_index = len(letters) // 2
+
+        for index, letter in enumerate(letters):
+            y = top + (index * line_height)
+            row_rect = QtCore.QRect(0, y, self.width(), line_height)
+            letter_rect = QtCore.QRect(self.width() - letter_width - 2, y, letter_width, line_height)
+            if index == middle_index:
+                arrow_rect = QtCore.QRect(0, y, arrow_width, line_height)
+                painter.drawText(arrow_rect, QtCore.Qt.AlignCenter, arrow)
+            painter.drawText(letter_rect, QtCore.Qt.AlignCenter, letter)
 
 
 class ArchivePreviewLabel(QtWidgets.QLabel):
@@ -613,18 +658,18 @@ class ArchiveSidebar(QtWidgets.QFrame):
         self.empty_state.setWordWrap(True)
         self.grid.addWidget(self.empty_state, 0, 0, 1, GRID_COLUMNS)
 
-        self.handle = ArchiveHandleLabel(">  Archive")
+        self.handle = ArchiveHandleLabel("Archive")
         self.handle.setFixedWidth(COLLAPSED_WIDTH)
         self.handle.setStyleSheet(
             "font-weight: 900;"
             "color: rgba(234,242,255,220);"
             "background: rgba(8,12,24,0.92);"
-            "border-left: 1px solid rgba(255,255,255,0.08);"
+            "border-right: 1px solid rgba(255,255,255,0.08);"
         )
         self.handle.clicked.connect(self.toggle)
 
-        root.addWidget(self.panel, 1)
         root.addWidget(self.handle)
+        root.addWidget(self.panel, 1)
 
     def _apply_surface_style(self) -> None:
         border = "rgba(255, 191, 4, 0.55)" if self._drop_active else "rgba(255,255,255,0.08)"
@@ -709,7 +754,7 @@ class ArchiveSidebar(QtWidgets.QFrame):
             self._update_item_widths()
 
     def _update_handle(self) -> None:
-        self.handle.setText("<  Archive" if self._open else ">  Archive")
+        self.handle.set_expanded(self._open)
 
     def _animate_width(self, target: int) -> None:
         current = max(self.width(), self.minimumWidth())

@@ -817,6 +817,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
 
         self._settings = QtCore.QSettings(APP_ORG, APP_NAME)
+        GenOps.apply_launch_tray_at_startup(settings=self._settings)
 
         # The UI keeps a lightweight in-memory log so status labels and dialogs
         # can reflect recent work without depending on the persisted log files.
@@ -1063,14 +1064,20 @@ class MainWindow(QtWidgets.QMainWindow):
         nav_layout.setContentsMargins(0,0,0,0)
         nav_layout.setSpacing(8)
         nav.body_layout().addLayout(nav_layout)
-        self.btn_settings_archive_storage = QtWidgets.QPushButton("Archive Storage")
-        self.btn_settings_image = QtWidgets.QPushButton("Image")
+        self.btn_settings_archive_storage = QtWidgets.QPushButton("Archive Settings")
+        self.btn_settings_image = QtWidgets.QPushButton("Images")
+        self.btn_settings_exit = QtWidgets.QPushButton("Exit")
         for b in (self.btn_settings_archive_storage, self.btn_settings_image):
             b.setObjectName("SettingsNavButton")
             b.setCursor(QtCore.Qt.PointingHandCursor)
             b.setMinimumHeight(38)
             b.setMinimumWidth(136)
             nav_layout.addWidget(b)
+        self.btn_settings_exit.setObjectName("SettingsExitButton")
+        self.btn_settings_exit.setCursor(QtCore.Qt.PointingHandCursor)
+        self.btn_settings_exit.setMinimumHeight(38)
+        self.btn_settings_exit.setMinimumWidth(136)
+        nav_layout.addWidget(self.btn_settings_exit)
         nav_layout.addStretch(1)
         upper_layout.addWidget(nav,0)
 
@@ -1083,7 +1090,7 @@ class MainWindow(QtWidgets.QMainWindow):
         archive_layout.setSpacing(10)
         self.settings_stack.addWidget(archive_page)
 
-        archive_card = CardFrame("Archive Storage")
+        archive_card = CardFrame("Archive Settings")
         if archive_card.title_label is not None:
             archive_card.title_label.setObjectName("SettingsSectionTitle")
         archive_layout.addWidget(archive_card)
@@ -1108,6 +1115,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_open_archive_storage_root.setCursor(QtCore.Qt.PointingHandCursor)
         self.btn_change_archive_storage = QtWidgets.QPushButton("Change Archive Storage Location")
         self.btn_change_archive_storage.setCursor(QtCore.Qt.PointingHandCursor)
+        self.chk_launch_tray_at_startup = QtWidgets.QCheckBox("Launch Tray at Startup")
+        self.chk_launch_tray_at_startup.setChecked(GenOps.load_launch_tray_at_startup(self._settings))
 
         archive_grid.addWidget(QtWidgets.QLabel("Archive Storage Root"), 0, 0)
         archive_grid.addWidget(self.lbl_archive_storage_root, 0, 1)
@@ -1117,6 +1126,7 @@ class MainWindow(QtWidgets.QMainWindow):
         archive_grid.addWidget(self.lbl_generated_icons_dir, 2, 1)
         archive_grid.addWidget(self.btn_open_archive_storage_root, 3, 0, 1, 2)
         archive_grid.addWidget(self.btn_change_archive_storage, 4, 0, 1, 2)
+        archive_grid.addWidget(self.chk_launch_tray_at_startup, 5, 0, 1, 2)
         archive_layout.addStretch(1)
 
         img_page = QtWidgets.QWidget()
@@ -1125,7 +1135,7 @@ class MainWindow(QtWidgets.QMainWindow):
         img_layout.setSpacing(10)
         self.settings_stack.addWidget(img_page)
 
-        opt = CardFrame('Image')
+        opt = CardFrame('Images')
         if opt.title_label is not None:
             opt.title_label.setObjectName("SettingsSectionTitle")
         img_layout.addWidget(opt)
@@ -1149,10 +1159,12 @@ class MainWindow(QtWidgets.QMainWindow):
         g.addWidget(QtWidgets.QLabel("Padding"), 1, 0)
         g.addWidget(self.cmb_padding, 1, 1)
         g.addWidget(self.chk_overwrite, 2, 0, 1, 2)
+
         img_layout.addStretch(1)
 
         self.btn_settings_archive_storage.clicked.connect(lambda: self.settings_stack.setCurrentIndex(0))
         self.btn_settings_image.clicked.connect(lambda: self.settings_stack.setCurrentIndex(1))
+        self.btn_settings_exit.clicked.connect(self._exit_iconmaker)
         self.settings_stack.setCurrentIndex(0)
         self.view_stack.setCurrentWidget(self.page_main)
         self._sync_view_chrome()
@@ -1341,6 +1353,22 @@ class MainWindow(QtWidgets.QMainWindow):
             border-color: rgba(0,220,255,0.45);
             background-color: rgba(0,220,255,0.10);
         }
+        QPushButton#SettingsExitButton {
+            padding: 7px 14px;
+            font-size: 11px;
+            font-weight: 900;
+            color: rgba(255, 240, 240, 0.96);
+            background-color: rgba(94, 16, 16, 0.94);
+            border: 1px solid rgba(184, 64, 64, 0.72);
+            border-radius: 10px;
+        }
+        QPushButton#SettingsExitButton:hover {
+            background-color: rgba(122, 22, 22, 0.96);
+            border-color: rgba(232, 96, 96, 0.86);
+        }
+        QPushButton#SettingsExitButton:pressed {
+            background-color: rgba(72, 12, 12, 0.98);
+        }
         QPushButton#SettingsNavButton {
             font-size: 10px;
             padding: 8px 10px;
@@ -1404,6 +1432,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_change_archive_storage.clicked.connect(self._change_archive_storage_location)  # type: ignore[arg-type]
         self.btn_open_current_source_image.clicked.connect(self._open_current_source_image)
         self.btn_open_current_generated_icon.clicked.connect(self._open_current_generated_icon)
+        self.chk_launch_tray_at_startup.toggled.connect(self._set_launch_tray_at_startup)
         self.title_bar.btn_nav.clicked.connect(self._toggle_settings_view)
         self.view_stack.currentChanged.connect(lambda _: self._sync_view_chrome())
 
@@ -1496,6 +1525,32 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             self.view_stack.setCurrentWidget(self.page_settings)
         self._sync_view_chrome()
+
+    def _exit_iconmaker(self) -> None:
+        """Exit the UI and tray together through the shared app-event channel."""
+        GenOps.publish_app_event("quit-all", "settings-exit")
+        app = QtWidgets.QApplication.instance()
+        if app is not None:
+            QtCore.QTimer.singleShot(120, app.quit)
+        else:
+            self.close()
+
+    def _set_launch_tray_at_startup(self, enabled: bool) -> None:
+        """Persist and apply the user's tray-at-startup preference."""
+        GenOps.save_launch_tray_at_startup(enabled, self._settings)
+        if GenOps.apply_launch_tray_at_startup(enabled, self._settings):
+            state = "enabled" if enabled else "disabled"
+            self._log(f"Tray startup {state}.")
+            return
+
+        blocker = QtCore.QSignalBlocker(self.chk_launch_tray_at_startup)
+        self.chk_launch_tray_at_startup.setChecked(not enabled)
+        del blocker
+        QtWidgets.QMessageBox.warning(
+            self,
+            "IconMaker",
+            "Could not update the Windows startup setting for the tray.",
+        )
 
     def _sync_view_chrome(self) -> None:
         in_settings = self.view_stack.currentWidget() is self.page_settings
@@ -1912,6 +1967,13 @@ class MainWindow(QtWidgets.QMainWindow):
         if not force and event.seq <= self._last_seen_event_seq:
             return
         self._last_seen_event_seq = event.seq
+        if not force and event.event_type == "quit-all":
+            app = QtWidgets.QApplication.instance()
+            if app is not None:
+                app.quit()
+            else:
+                self.close()
+            return
         if force or event.event_type in {
             "archive-storage-changed",
             "archive-storage-maintained",

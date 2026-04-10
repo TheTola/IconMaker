@@ -4,19 +4,12 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="eb7c0f07-7f6d-4595-a872-39c0ddd0ba35" name="Changes" comment="Added Gen_name and StateMemory modules to harden data integrity, improve&#10;failure transparency, and eliminate repetitive UI setup.&#10;&#10;1) Canonical Filename Enforcement (No Duplicates Policy)&#10;&#10;- Introduced strict canonical name resolution (Unicode NFC + casefold).&#10;- Enforced one-to-one mapping: source image → canonical image → icon.&#10;- If a collision occurs:&#10;    - Incoming file is ignored&#10;    - Warning is logged&#10;    - No renaming, suffixing, or duplicate creation&#10;- Eliminates prior behavior that could generate anime2.png, anime (2).png, etc.&#10;- Ensures rename-safe behavior inside Icon Images library.&#10;&#10;2) Production-Grade Image Discovery Diagnostics&#10;&#10;Replaced shallow “No images found” error with explicit failure mode reporting.&#10;&#10;Now distinguishes:&#10;- Path does not exist&#10;- Unsupported file extension&#10;- Empty directory&#10;- Images exist only in subfolders while recursive is disabled&#10;- Folder contains only unsupported types&#10;&#10;Engine reports WHY zero images were found instead of only stating that none were found.&#10;&#10;3) Persistent UI State (QSettings)&#10;&#10;App now remembers:&#10;- Last selected input path&#10;- Last mode (file vs folder)&#10;- Last output directory&#10;- Recursive flag&#10;- Overwrite flag&#10;- Padding preset&#10;&#10;State restores automatically on startup and auto-saves on interaction.&#10;&#10;Impact:&#10;- Eliminates duplicate image creation&#10;- Hardens data integrity&#10;- Improves professional-grade diagnostics&#10;- Reduces repetitive workflow friction&#10;&#10;Status:&#10;Production-ready behavior for naming, diagnostics, and session persistence.">
-      <change beforePath="$PROJECT_DIR$/.idea/.name" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/.name" afterDir="false" />
+    <list default="true" id="eb7c0f07-7f6d-4595-a872-39c0ddd0ba35" name="Changes" comment="ALOT of Improvement but started making mac compaatble and fixed the archive formerly the library">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Gen1.py" beforeDir="false" afterPath="$PROJECT_DIR$/Gen1.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Gen2.py" beforeDir="false" afterPath="$PROJECT_DIR$/Gen2.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Gen3.py" beforeDir="false" afterPath="$PROJECT_DIR$/Gen3.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Gen4.py" beforeDir="false" afterPath="$PROJECT_DIR$/Gen4.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/GenGlobal.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/GenName.py" beforeDir="false" afterPath="$PROJECT_DIR$/GenName.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/GenArchive.py" beforeDir="false" afterPath="$PROJECT_DIR$/GenArchive.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/GenOps.py" beforeDir="false" afterPath="$PROJECT_DIR$/GenOps.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/IconMaker.spec" beforeDir="false" afterPath="$PROJECT_DIR$/IconMaker.spec" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/IconMakerMaster.py" beforeDir="false" afterPath="$PROJECT_DIR$/IconMakerMaster.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/StateMemory.py" beforeDir="false" afterPath="$PROJECT_DIR$/StateMemory.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -49,36 +42,36 @@
     <option name="hideEmptyMiddlePackages" value="true" />
     <option name="showLibraryContents" value="true" />
   </component>
-  <component name="PropertiesComponent"><![CDATA[{
-  "keyToString": {
-    "ModuleVcsDetector.initialDetectionPerformed": "true",
-    "Python.Gen1.executor": "Run",
-    "Python.Gen1_FULL_FIXED.executor": "Run",
-    "Python.Gen1_compact_sidebar.executor": "Run",
-    "Python.Gen1_drawer_version.executor": "Run",
-    "Python.Gen2.executor": "Run",
-    "Python.Gen3.executor": "Run",
-    "Python.GenArchive.executor": "Run",
-    "Python.GenName.executor": "Run",
-    "Python.GenOps.executor": "Run",
-    "Python.IconMaker.executor": "Run",
-    "Python.IconMakerMaster.executor": "Run",
-    "Python.Main.executor": "Run",
-    "Python.StateMemory.executor": "Run",
-    "Python.faction_prime.executor": "Run",
-    "Python.main.executor": "Run",
-    "RunOnceActivity.ShowReadmeOnStart": "true",
-    "RunOnceActivity.git.unshallow": "true",
-    "com.intellij.ml.llm.matterhorn.ej.ui.settings.DefaultAutoModeForALLUsers.v1": "true",
-    "com.intellij.ml.llm.matterhorn.ej.ui.settings.DefaultModelSelectionForGA.v1": "true",
-    "git-widget-placeholder": "master",
-    "junie.onboarding.icon.badge.shown": "true",
-    "last_opened_file_path": "C:/Users/Oluwatola Ayedun/Desktop/IconMaker",
-    "run.code.analysis.last.selected.profile": "pProject Default",
-    "settings.editor.selected.configurable": "com.jetbrains.python.configuration.PyActiveSdkModuleConfigurable",
-    "to.speed.mode.migration.done": "true"
+  <component name="PropertiesComponent">{
+  &quot;keyToString&quot;: {
+    &quot;ModuleVcsDetector.initialDetectionPerformed&quot;: &quot;true&quot;,
+    &quot;Python.Gen1.executor&quot;: &quot;Run&quot;,
+    &quot;Python.Gen1_FULL_FIXED.executor&quot;: &quot;Run&quot;,
+    &quot;Python.Gen1_compact_sidebar.executor&quot;: &quot;Run&quot;,
+    &quot;Python.Gen1_drawer_version.executor&quot;: &quot;Run&quot;,
+    &quot;Python.Gen2.executor&quot;: &quot;Run&quot;,
+    &quot;Python.Gen3.executor&quot;: &quot;Run&quot;,
+    &quot;Python.GenArchive.executor&quot;: &quot;Run&quot;,
+    &quot;Python.GenName.executor&quot;: &quot;Run&quot;,
+    &quot;Python.GenOps.executor&quot;: &quot;Run&quot;,
+    &quot;Python.IconMaker.executor&quot;: &quot;Run&quot;,
+    &quot;Python.IconMakerMaster.executor&quot;: &quot;Run&quot;,
+    &quot;Python.Main.executor&quot;: &quot;Run&quot;,
+    &quot;Python.StateMemory.executor&quot;: &quot;Run&quot;,
+    &quot;Python.faction_prime.executor&quot;: &quot;Run&quot;,
+    &quot;Python.main.executor&quot;: &quot;Run&quot;,
+    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.git.unshallow&quot;: &quot;true&quot;,
+    &quot;com.intellij.ml.llm.matterhorn.ej.ui.settings.DefaultAutoModeForALLUsers.v1&quot;: &quot;true&quot;,
+    &quot;com.intellij.ml.llm.matterhorn.ej.ui.settings.DefaultModelSelectionForGA.v1&quot;: &quot;true&quot;,
+    &quot;git-widget-placeholder&quot;: &quot;master&quot;,
+    &quot;junie.onboarding.icon.badge.shown&quot;: &quot;true&quot;,
+    &quot;last_opened_file_path&quot;: &quot;C:/Users/Oluwatola Ayedun/Desktop/IconMaker&quot;,
+    &quot;run.code.analysis.last.selected.profile&quot;: &quot;pProject Default&quot;,
+    &quot;settings.editor.selected.configurable&quot;: &quot;com.jetbrains.python.configuration.PyActiveSdkModuleConfigurable&quot;,
+    &quot;to.speed.mode.migration.done&quot;: &quot;true&quot;
   }
-}]]></component>
+}</component>
   <component name="SharedIndexes">
     <attachedChunks>
       <set>
@@ -126,13 +119,30 @@
       <option name="project" value="LOCAL" />
       <updated>1770844060989</updated>
     </task>
-    <option name="localTasksCounter" value="5" />
+    <task id="LOCAL-00005" summary="ALOT of Improvement but started making mac compaatble and fixed the archive formerly the library">
+      <option name="closed" value="true" />
+      <created>1775761767143</created>
+      <option name="number" value="00005" />
+      <option name="presentableId" value="LOCAL-00005" />
+      <option name="project" value="LOCAL" />
+      <updated>1775761767143</updated>
+    </task>
+    <task id="LOCAL-00006" summary="ALOT of Improvement but started making mac compaatble and fixed the archive formerly the library">
+      <option name="closed" value="true" />
+      <created>1775781134700</created>
+      <option name="number" value="00006" />
+      <option name="presentableId" value="LOCAL-00006" />
+      <option name="project" value="LOCAL" />
+      <updated>1775781134701</updated>
+    </task>
+    <option name="localTasksCounter" value="7" />
     <servers />
   </component>
   <component name="VcsManagerConfiguration">
     <MESSAGE value="made a lot of small improvements to the function ality" />
     <MESSAGE value="Added Gen_name and StateMemory modules to harden data integrity, improve&#10;failure transparency, and eliminate repetitive UI setup.&#10;&#10;1) Canonical Filename Enforcement (No Duplicates Policy)&#10;&#10;- Introduced strict canonical name resolution (Unicode NFC + casefold).&#10;- Enforced one-to-one mapping: source image → canonical image → icon.&#10;- If a collision occurs:&#10;    - Incoming file is ignored&#10;    - Warning is logged&#10;    - No renaming, suffixing, or duplicate creation&#10;- Eliminates prior behavior that could generate anime2.png, anime (2).png, etc.&#10;- Ensures rename-safe behavior inside Icon Images library.&#10;&#10;2) Production-Grade Image Discovery Diagnostics&#10;&#10;Replaced shallow “No images found” error with explicit failure mode reporting.&#10;&#10;Now distinguishes:&#10;- Path does not exist&#10;- Unsupported file extension&#10;- Empty directory&#10;- Images exist only in subfolders while recursive is disabled&#10;- Folder contains only unsupported types&#10;&#10;Engine reports WHY zero images were found instead of only stating that none were found.&#10;&#10;3) Persistent UI State (QSettings)&#10;&#10;App now remembers:&#10;- Last selected input path&#10;- Last mode (file vs folder)&#10;- Last output directory&#10;- Recursive flag&#10;- Overwrite flag&#10;- Padding preset&#10;&#10;State restores automatically on startup and auto-saves on interaction.&#10;&#10;Impact:&#10;- Eliminates duplicate image creation&#10;- Hardens data integrity&#10;- Improves professional-grade diagnostics&#10;- Reduces repetitive workflow friction&#10;&#10;Status:&#10;Production-ready behavior for naming, diagnostics, and session persistence." />
-    <option name="LAST_COMMIT_MESSAGE" value="Added Gen_name and StateMemory modules to harden data integrity, improve&#10;failure transparency, and eliminate repetitive UI setup.&#10;&#10;1) Canonical Filename Enforcement (No Duplicates Policy)&#10;&#10;- Introduced strict canonical name resolution (Unicode NFC + casefold).&#10;- Enforced one-to-one mapping: source image → canonical image → icon.&#10;- If a collision occurs:&#10;    - Incoming file is ignored&#10;    - Warning is logged&#10;    - No renaming, suffixing, or duplicate creation&#10;- Eliminates prior behavior that could generate anime2.png, anime (2).png, etc.&#10;- Ensures rename-safe behavior inside Icon Images library.&#10;&#10;2) Production-Grade Image Discovery Diagnostics&#10;&#10;Replaced shallow “No images found” error with explicit failure mode reporting.&#10;&#10;Now distinguishes:&#10;- Path does not exist&#10;- Unsupported file extension&#10;- Empty directory&#10;- Images exist only in subfolders while recursive is disabled&#10;- Folder contains only unsupported types&#10;&#10;Engine reports WHY zero images were found instead of only stating that none were found.&#10;&#10;3) Persistent UI State (QSettings)&#10;&#10;App now remembers:&#10;- Last selected input path&#10;- Last mode (file vs folder)&#10;- Last output directory&#10;- Recursive flag&#10;- Overwrite flag&#10;- Padding preset&#10;&#10;State restores automatically on startup and auto-saves on interaction.&#10;&#10;Impact:&#10;- Eliminates duplicate image creation&#10;- Hardens data integrity&#10;- Improves professional-grade diagnostics&#10;- Reduces repetitive workflow friction&#10;&#10;Status:&#10;Production-ready behavior for naming, diagnostics, and session persistence." />
+    <MESSAGE value="ALOT of Improvement but started making mac compaatble and fixed the archive formerly the library" />
+    <option name="LAST_COMMIT_MESSAGE" value="ALOT of Improvement but started making mac compaatble and fixed the archive formerly the library" />
   </component>
   <component name="XDebuggerManager">
     <breakpoint-manager>
