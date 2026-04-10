@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Shared logging for IconMaker."""
+"""
+Shared rotating log helpers for IconMaker.
+
+This module gives launcher, UI, tray, and ops code a consistent way to write
+bounded log files without each subsystem inventing its own logging policy.
+"""
 from __future__ import annotations
 
 import logging
@@ -15,6 +20,7 @@ _BACKUP_COUNT = 3
 
 
 def app_data_dir() -> Path:
+    """Return the user-writable root for persistent app data on the current platform."""
     if os.name == "nt":
         base = os.environ.get("LOCALAPPDATA", "").strip()
         if base:
@@ -23,6 +29,7 @@ def app_data_dir() -> Path:
 
 
 def logs_dir(*, base_dir: Optional[Path] = None) -> Path:
+    """Return the log directory and ensure it exists before callers write to it."""
     root = Path(base_dir) if base_dir is not None else app_data_dir()
     path = root / "Logs"
     path.mkdir(parents=True, exist_ok=True)
@@ -30,11 +37,13 @@ def logs_dir(*, base_dir: Optional[Path] = None) -> Path:
 
 
 def log_file(name: str, *, base_dir: Optional[Path] = None) -> Path:
+    """Normalize logger names into safe on-disk filenames."""
     safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in str(name or "app"))
     return logs_dir(base_dir=base_dir) / f"{safe}.log"
 
 
 def get_logger(name: str, *, base_dir: Optional[Path] = None) -> logging.Logger:
+    """Return a cached rotating logger so logs stay bounded over long-running sessions."""
     logger_name = f"{APP_NAME}.{name}.{Path(base_dir).as_posix() if base_dir else 'default'}"
     logger = logging.getLogger(logger_name)
     if logger.handlers:
@@ -48,6 +57,7 @@ def get_logger(name: str, *, base_dir: Optional[Path] = None) -> logging.Logger:
 
 
 def write_line(name: str, message: str, *, level: str = "info", base_dir: Optional[Path] = None) -> None:
+    """Convenience wrapper for one-off writes from modules that do not manage loggers."""
     logger = get_logger(name, base_dir=base_dir)
     fn = getattr(logger, str(level).lower(), logger.info)
     fn(str(message))
