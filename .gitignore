@@ -1,0 +1,12 @@
+.venv/
+.idea/
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.log
+desktop.ini
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
