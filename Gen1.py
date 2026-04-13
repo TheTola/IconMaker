@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 r"""
 Main application window and user-facing workflow for IconMaker.
 
@@ -36,6 +36,7 @@ from AppIdentity import (
 )
 from GenArchive import ArchiveSidebar, ArchiveEntrySnapshot, THUMB_SIZE
 
+from Gen3 import scan_and_convert
 from Gen4 import get_app_icon
 
 IS_WINDOWS = sys.platform.startswith("win")
@@ -234,18 +235,17 @@ class CustomTitleBar(QtWidgets.QFrame):
         self.setObjectName("AppTitleBar")
         self._native_window_controls = native_window_controls
         self.setProperty("nativeChrome", native_window_controls)
-        self.setFixedHeight(60 if native_window_controls else 88)
+        self.setFixedHeight(60 if native_window_controls else 60)
         self._drag_offset: QtCore.QPoint | None = None
 
         layout = QtWidgets.QHBoxLayout(self)
-        layout.setContentsMargins(12, 5, 8, 5)
+        layout.setContentsMargins(12, 0, 8, 0)
         layout.setSpacing(10)
 
         self.brand_label = QtWidgets.QLabel()
         self.brand_label.setObjectName("TitleBarBrand")
         self.brand_label.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
-        brand_size = 48 if native_window_controls else 78
-        self.brand_label.setFixedSize(brand_size, brand_size)
+        self.brand_label.setFixedSize(220 if native_window_controls else 220, 52)
         self.brand_label.setAlignment(QtCore.Qt.AlignCenter)
         brand_pixmap = QtGui.QPixmap(str(APP_BRANDING_IMAGE_PATH))
         if not brand_pixmap.isNull():
@@ -707,7 +707,7 @@ class ArchiveRefreshWorker(QtCore.QObject):
     def run(self) -> None:
         try:
             snapshots: list[ArchiveEntrySnapshot] = []
-            for path in sorted(eng.list_archive_source_images(paths=self.paths), key=lambda item: str(item).casefold()):
+            for path in eng.list_archive_source_images(paths=self.paths):
                 thread = self.thread()
                 if thread is not None and thread.isInterruptionRequested():
                     return
@@ -718,6 +718,10 @@ class ArchiveRefreshWorker(QtCore.QObject):
             thread = self.thread()
             if thread is not None and thread.isInterruptionRequested():
                 return
+            # Archive browsing is newest-first so freshly imported or edited
+            # images surface immediately without forcing the user to hunt
+            # through an alphabetized grid.
+            snapshots.sort(key=lambda item: (-item.signature_mtime, str(item.path).casefold()))
             self.finished.emit(self.generation, snapshots)
         except Exception as exc:
             self.failed.emit(self.generation, f"{type(exc).__name__}: {exc}")
@@ -901,6 +905,19 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._update_run_state()
         self.title_bar.sync_state()
+        QtCore.QTimer.singleShot(0, self._startup_scan)
+
+    def _startup_scan(self) -> None:
+        try:
+            result = scan_and_convert()
+            self._refresh_archive_view(immediate=True)
+            self._update_workflow_actions()
+            if result.converted or result.deleted_orphans or result.mirrored_into_archive:
+                self._log(
+                    f"Startup scan complete. Imported={result.mirrored_into_archive} Converted={result.converted} Deleted={result.deleted_orphans}"
+                )
+        except Exception as e:
+            self._log(f"ERR: Startup scan failed: {type(e).__name__}: {e}", "ERR")
 
     def _set_archive_storage_paths(self, archive_storage_root: Path) -> None:
         root = Path(archive_storage_root).resolve()
@@ -2245,4 +2262,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

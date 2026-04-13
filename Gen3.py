@@ -224,7 +224,7 @@ class TrayAgent(QtWidgets.QSystemTrayIcon):
         self._attach_watch()
         self._periodic.start()
         self._event_timer.start()
-        QtCore.QTimer.singleShot(1000, self._scan_now)
+        QtCore.QTimer.singleShot(100, self._scan_now)
         QtCore.QTimer.singleShot(250, lambda: self._poll_app_events(force=True))
         self.show()
 
