@@ -4,18 +4,9 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="eb7c0f07-7f6d-4595-a872-39c0ddd0ba35" name="Changes" comment="Merge remote-tracking branch 'origin/master'&#10;&#10;# Conflicts:&#10;#&#9;.idea/workspace.xml">
+    <list default="true" id="eb7c0f07-7f6d-4595-a872-39c0ddd0ba35" name="Changes" comment="Merge remote-tracking branch 'origin/master'&#10;&#10;# Conflicts:&#10;#&#9;.idea/workspace.xml&#10;&#10;&#10;adsa">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Gen1.py" beforeDir="false" afterPath="$PROJECT_DIR$/Gen1.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Gen3.py" beforeDir="false" afterPath="$PROJECT_DIR$/Gen3.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/assets/Iconner.ico" beforeDir="false" afterPath="$PROJECT_DIR$/assets/Iconner.ico" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/assets/Iconner.png" beforeDir="false" afterPath="$PROJECT_DIR$/assets/Iconner.png" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/assets/Test/628a3b53-4e17-4873-83fd-6d6d7ec3107c.png" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/assets/Test/Chrome Flames.png" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/assets/Test/Gems.png" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/assets/Test/Hydra Axe.png" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/assets/Test/Slighning.png" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/assets/Test/WQueen.png" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/IconMaker.spec" beforeDir="false" afterPath="$PROJECT_DIR$/IconMaker.spec" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -25,6 +16,7 @@
   <component name="Git.Settings">
     <option name="PUSH_AUTO_UPDATE" value="true" />
     <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
+    <option name="UPDATE_TYPE" value="REBASE" />
   </component>
   <component name="GitHubPullRequestSearchHistory">{
   &quot;lastFilter&quot;: {
@@ -35,7 +27,7 @@
   <component name="GithubPullRequestsUISettings">{
   &quot;selectedUrlAndAccountId&quot;: {
     &quot;url&quot;: &quot;https://github.com/TheTola/IconMaker.git&quot;,
-    &quot;accountId&quot;: &quot;b9f9a48b-e717-4dcd-8a8d-9723b8dd031b&quot;
+    &quot;accountId&quot;: &quot;6b84c54b-f933-472e-a205-7b5a2b75073a&quot;
   }
 }</component>
   <component name="ProblemsViewState">
@@ -45,47 +37,51 @@
   &quot;associatedIndex&quot;: 2
 }</component>
   <component name="ProjectId" id="33IWHmTDi8HPEvSqdZo3T2bLM5l" />
+  <component name="ProjectLevelVcsManager">
+    <OptionsSetting value="false" id="Update" />
+  </component>
   <component name="ProjectViewState">
     <option name="hideEmptyMiddlePackages" value="true" />
     <option name="showLibraryContents" value="true" />
   </component>
-  <component name="PropertiesComponent"><![CDATA[{
-  "keyToString": {
-    "ModuleVcsDetector.initialDetectionPerformed": "true",
-    "Python.Gen1.executor": "Run",
-    "Python.Gen1_FULL_FIXED.executor": "Run",
-    "Python.Gen1_compact_sidebar.executor": "Run",
-    "Python.Gen1_drawer_version.executor": "Run",
-    "Python.Gen2.executor": "Run",
-    "Python.Gen3.executor": "Run",
-    "Python.GenArchive.executor": "Run",
-    "Python.GenName.executor": "Run",
-    "Python.GenOps.executor": "Run",
-    "Python.IconMaker.executor": "Run",
-    "Python.IconMakerMaster.executor": "Run",
-    "Python.Main.executor": "Run",
-    "Python.StateMemory.executor": "Run",
-    "Python.faction_prime.executor": "Run",
-    "Python.main.executor": "Run",
-    "RunOnceActivity.ShowReadmeOnStart": "true",
-    "RunOnceActivity.git.unshallow": "true",
-    "RunOnceActivity.typescript.service.memoryLimit.init": "true",
-    "codeWithMe.voiceChat.enabledByDefault": "false",
-    "com.intellij.ml.llm.matterhorn.ej.ui.settings.DefaultAutoModeForALLUsers.v1": "true",
-    "com.intellij.ml.llm.matterhorn.ej.ui.settings.DefaultModelSelectionForGA.v1": "true",
-    "git-widget-placeholder": "master",
-    "junie.onboarding.icon.badge.shown": "true",
-    "last_opened_file_path": "C:/Users/Oluwatola Ayedun/Desktop/IconMaker",
-    "node.js.detected.package.eslint": "true",
-    "node.js.detected.package.tslint": "true",
-    "node.js.selected.package.eslint": "(autodetect)",
-    "node.js.selected.package.tslint": "(autodetect)",
-    "run.code.analysis.last.selected.profile": "pProject Default",
-    "settings.editor.selected.configurable": "com.jetbrains.python.configuration.PyActiveSdkModuleConfigurable",
-    "to.speed.mode.migration.done": "true",
-    "vue.rearranger.settings.migration": "true"
+  <component name="PropertiesComponent">{
+  &quot;keyToString&quot;: {
+    &quot;ModuleVcsDetector.initialDetectionPerformed&quot;: &quot;true&quot;,
+    &quot;Python.Gen1.executor&quot;: &quot;Run&quot;,
+    &quot;Python.Gen1_FULL_FIXED.executor&quot;: &quot;Run&quot;,
+    &quot;Python.Gen1_compact_sidebar.executor&quot;: &quot;Run&quot;,
+    &quot;Python.Gen1_drawer_version.executor&quot;: &quot;Run&quot;,
+    &quot;Python.Gen2.executor&quot;: &quot;Run&quot;,
+    &quot;Python.Gen3.executor&quot;: &quot;Run&quot;,
+    &quot;Python.GenArchive.executor&quot;: &quot;Run&quot;,
+    &quot;Python.GenName.executor&quot;: &quot;Run&quot;,
+    &quot;Python.GenOps.executor&quot;: &quot;Run&quot;,
+    &quot;Python.IconMaker.executor&quot;: &quot;Run&quot;,
+    &quot;Python.IconMakerMaster.executor&quot;: &quot;Run&quot;,
+    &quot;Python.Main.executor&quot;: &quot;Run&quot;,
+    &quot;Python.StateMemory.executor&quot;: &quot;Run&quot;,
+    &quot;Python.faction_prime.executor&quot;: &quot;Run&quot;,
+    &quot;Python.main.executor&quot;: &quot;Run&quot;,
+    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.git.unshallow&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.typescript.service.memoryLimit.init&quot;: &quot;true&quot;,
+    &quot;codeWithMe.voiceChat.enabledByDefault&quot;: &quot;false&quot;,
+    &quot;com.intellij.ml.llm.matterhorn.ej.ui.settings.DefaultAutoModeForALLUsers.v1&quot;: &quot;true&quot;,
+    &quot;com.intellij.ml.llm.matterhorn.ej.ui.settings.DefaultModelSelectionForGA.v1&quot;: &quot;true&quot;,
+    &quot;git-widget-placeholder&quot;: &quot;master&quot;,
+    &quot;junie.onboarding.icon.badge.shown&quot;: &quot;true&quot;,
+    &quot;last_opened_file_path&quot;: &quot;C:/Users/Oluwatola Ayedun/Desktop/IconMaker&quot;,
+    &quot;node.js.detected.package.eslint&quot;: &quot;true&quot;,
+    &quot;node.js.detected.package.tslint&quot;: &quot;true&quot;,
+    &quot;node.js.selected.package.eslint&quot;: &quot;(autodetect)&quot;,
+    &quot;node.js.selected.package.tslint&quot;: &quot;(autodetect)&quot;,
+    &quot;run.code.analysis.last.selected.profile&quot;: &quot;pProject Default&quot;,
+    &quot;settings.editor.selected.configurable&quot;: &quot;com.jetbrains.python.configuration.PyActiveSdkModuleConfigurable&quot;,
+    &quot;to.speed.mode.migration.done&quot;: &quot;true&quot;,
+    &quot;vue.rearranger.settings.migration&quot;: &quot;true&quot;
   }
-}]]></component>
+}</component>
   <component name="RunManager">
     <configuration name="Gen1" type="PythonConfigurationType" factoryName="Python" nameIsGenerated="true">
       <option name="ENV_FILES" value="" />
@@ -95,9 +91,8 @@
         <env name="PYTHONUNBUFFERED" value="1" />
       </envs>
       <option name="SDK_HOME" value="" />
-      <option name="SDK_NAME" value="Python 3.13 (Iconner)" />
       <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$" />
-      <option name="IS_MODULE_SDK" value="false" />
+      <option name="IS_MODULE_SDK" value="true" />
       <option name="ADD_CONTENT_ROOTS" value="true" />
       <option name="ADD_SOURCE_ROOTS" value="true" />
       <option name="DEBUG_JUST_MY_CODE" value="false" />
@@ -129,7 +124,7 @@
       <option name="number" value="Default" />
       <option name="presentableId" value="Default" />
       <updated>1759004980971</updated>
-      <workItem from="1776060881546" duration="3280000" />
+      <workItem from="1776060881546" duration="4047000" />
     </task>
     <task id="LOCAL-00001" summary="made a lot of small improvements to the function ality">
       <option name="closed" value="true" />
@@ -195,7 +190,31 @@
       <option name="project" value="LOCAL" />
       <updated>1775785920479</updated>
     </task>
-    <option name="localTasksCounter" value="9" />
+    <task id="LOCAL-00009" summary="Merge remote-tracking branch 'origin/master'&#10;&#10;# Conflicts:&#10;#&#9;.idea/workspace.xml&#10;&#10;&#10;adsa">
+      <option name="closed" value="true" />
+      <created>1776064378688</created>
+      <option name="number" value="00009" />
+      <option name="presentableId" value="LOCAL-00009" />
+      <option name="project" value="LOCAL" />
+      <updated>1776064378688</updated>
+    </task>
+    <task id="LOCAL-00010" summary="Merge remote-tracking branch 'origin/master'&#10;&#10;# Conflicts:&#10;#&#9;.idea/workspace.xml&#10;&#10;&#10;adsa">
+      <option name="closed" value="true" />
+      <created>1776064397140</created>
+      <option name="number" value="00010" />
+      <option name="presentableId" value="LOCAL-00010" />
+      <option name="project" value="LOCAL" />
+      <updated>1776064397140</updated>
+    </task>
+    <task id="LOCAL-00011" summary="Merge remote-tracking branch 'origin/master'&#10;&#10;# Conflicts:&#10;#&#9;.idea/workspace.xml&#10;&#10;&#10;adsa">
+      <option name="closed" value="true" />
+      <created>1776064503699</created>
+      <option name="number" value="00011" />
+      <option name="presentableId" value="LOCAL-00011" />
+      <option name="project" value="LOCAL" />
+      <updated>1776064503699</updated>
+    </task>
+    <option name="localTasksCounter" value="12" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -218,7 +237,8 @@
     <MESSAGE value="ghcfyjtnmdfgtjdtwergh" />
     <MESSAGE value="ALOT of Improvement but started making mac compaatble and fixed the archive formerly the library" />
     <MESSAGE value="Merge remote-tracking branch 'origin/master'&#10;&#10;# Conflicts:&#10;#&#9;.idea/workspace.xml" />
-    <option name="LAST_COMMIT_MESSAGE" value="Merge remote-tracking branch 'origin/master'&#10;&#10;# Conflicts:&#10;#&#9;.idea/workspace.xml" />
+    <MESSAGE value="Merge remote-tracking branch 'origin/master'&#10;&#10;# Conflicts:&#10;#&#9;.idea/workspace.xml&#10;&#10;&#10;adsa" />
+    <option name="LAST_COMMIT_MESSAGE" value="Merge remote-tracking branch 'origin/master'&#10;&#10;# Conflicts:&#10;#&#9;.idea/workspace.xml&#10;&#10;&#10;adsa" />
   </component>
   <component name="XDebuggerManager">
     <breakpoint-manager>
