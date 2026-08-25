@@ -65,14 +65,14 @@ ensure_logs_dir()
 
 # These override strings may be absolute or relative. Validation is deferred
 # until lookup so packaged and source runs can share the same config surface.
-APP_TITLE_IMAGE_OVERRIDE = "assets/Iconner.png"
+APP_TITLE_IMAGE_OVERRIDE = "assets/iconner.png"
 APP_ICON_MAC_OVERRIDE = "assets/IconMaker.icns"
-APP_ICON_ICO_OVERRIDE = "assets/Iconner.ico"
+APP_ICON_ICO_OVERRIDE = "assets/iconner.ico"
 
 ASSET_DIR_CANDIDATES = ("assets", "Assets")
-APP_TITLE_PNG_NAME = "Iconner.png"
+APP_TITLE_PNG_NAME = "iconner.png"
 APP_ICON_MAC_NAME = "IconMaker.icns"
-APP_ICON_ICO_NAME = "Iconner.ico"
+APP_ICON_ICO_NAME = "iconner.ico"
 
 
 def _dev_dir() -> Path:

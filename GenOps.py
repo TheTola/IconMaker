@@ -32,6 +32,8 @@ EVENT_TIME_KEY = "app_events/time"
 ARCHIVE_STORAGE_ROOT_KEY = "archive_storage_root"
 LEGACY_ARCHIVE_ROOT_KEY = "archive_root"
 LEGACY_LIBRARY_ROOT_KEY = "library_root"
+SAGE_URL_KEY = "sage/url"
+DEFAULT_SAGE_URL = "https://chatgpt.com/g/g-68e8c5f35ff0819195a81c501942a072-sage-of-iconer"
 STARTUP_TRAY_ENABLED_KEY = "startup/launch_tray"
 ARCHIVE_STORAGE_PAUSE_KEY = "app_state/archive_storage_pause"
 ARCHIVE_STORAGE_PAUSE_REASON_KEY = "app_state/archive_storage_pause_reason"
@@ -54,6 +56,13 @@ class ArchiveStorageRelocationPlan:
     source_root: Path
     target_root: Path
     source_files: List[Path]
+
+
+@dataclass(frozen=True)
+class GeneratedIconsCleanupResult:
+    moved_images: int
+    deleted_files: int
+    failed_files: int
 
 
 @dataclass(frozen=True)
@@ -127,6 +136,31 @@ def save_archive_storage_root(path: str | Path, settings: QtCore.QSettings | Non
         s.setValue(key, str(root))
     s.sync()
     return root
+
+
+def _normalized_sage_url(value: str) -> str:
+    raw = str(value or "").strip()
+    url = QtCore.QUrl.fromUserInput(raw)
+    if not raw or not url.isValid() or url.scheme().lower() not in {"http", "https"} or not url.host():
+        raise ValueError("Enter a valid http:// or https:// URL.")
+    return url.toString()
+
+
+def load_sage_url(settings: QtCore.QSettings | None = None) -> str:
+    s = settings or _settings()
+    raw = str(s.value(SAGE_URL_KEY, DEFAULT_SAGE_URL) or "").strip()
+    try:
+        return _normalized_sage_url(raw)
+    except ValueError:
+        return DEFAULT_SAGE_URL
+
+
+def save_sage_url(url: str, settings: QtCore.QSettings | None = None) -> str:
+    normalized = _normalized_sage_url(url)
+    s = settings or _settings()
+    s.setValue(SAGE_URL_KEY, normalized)
+    s.sync()
+    return normalized
 
 
 def load_launch_tray_at_startup(settings: QtCore.QSettings | None = None) -> bool:
@@ -225,6 +259,7 @@ def _iter_all_dirs(root: Path) -> List[str]:
 def build_archive_storage_watch_paths(paths: EnginePaths) -> List[str]:
     try:
         paths.images_dir.mkdir(parents=True, exist_ok=True)
+        paths.icons_dir.mkdir(parents=True, exist_ok=True)
     except Exception:
         pass
     return _iter_all_dirs(paths.images_dir)
@@ -277,6 +312,63 @@ def default_engine_paths() -> EnginePaths:
         return EnginePaths.from_archive_storage_root(Path.home() / "Desktop")
 
 
+def clean_generated_icons_dir(
+    *,
+    paths: EnginePaths,
+    logfn: Callable[[str], None] | None = None,
+) -> GeneratedIconsCleanupResult:
+    """
+    Move misplaced images out of Icons and delete all other non-.ico files.
+    """
+    try:
+        paths.images_dir.mkdir(parents=True, exist_ok=True)
+        paths.icons_dir.mkdir(parents=True, exist_ok=True)
+    except Exception as exc:
+        if logfn:
+            logfn(f"Icon folder cleanup failed: {type(exc).__name__}: {exc}")
+        return GeneratedIconsCleanupResult(0, 0, 1)
+
+    try:
+        files = sorted(
+            (path for path in paths.icons_dir.rglob("*") if path.is_file()),
+            key=lambda path: str(path).casefold(),
+        )
+    except Exception as exc:
+        if logfn:
+            logfn(f"Icon folder cleanup failed: {type(exc).__name__}: {exc}")
+        return GeneratedIconsCleanupResult(0, 0, 1)
+
+    moved_images = 0
+    deleted_files = 0
+    failed_files = 0
+    for path in files:
+        if path.suffix.lower() == ".ico":
+            continue
+
+        try:
+            if path.suffix.lower() in eng.IMAGE_EXTS:
+                relative = path.relative_to(paths.icons_dir)
+                target = eng.unique_path(paths.images_dir / relative)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(path), str(target))
+                moved_images += 1
+                if logfn:
+                    logfn(f"Moved misplaced image: {path} -> {target}")
+            else:
+                path.unlink(missing_ok=True)
+                deleted_files += 1
+                if logfn:
+                    logfn(f"Deleted invalid icon-library file: {path}")
+        except FileNotFoundError:
+            continue
+        except Exception as exc:
+            failed_files += 1
+            if logfn:
+                logfn(f"Icon folder cleanup failed for {path}: {type(exc).__name__}: {exc}")
+
+    return GeneratedIconsCleanupResult(moved_images, deleted_files, failed_files)
+
+
 def run_archive_maintenance(
     *,
     paths: EnginePaths,
@@ -293,6 +385,7 @@ def run_archive_maintenance(
     missing or outdated icons, and removes orphaned icons. External originals
     are never renamed or deleted here.
     """
+    cleanup = clean_generated_icons_dir(paths=paths, logfn=logfn)
     report = eng.scan_archive_sources_and_convert(
         paths=paths,
         overwrite=overwrite,
@@ -304,11 +397,14 @@ def run_archive_maintenance(
         orphan_action="delete",
     )
     _ops_log(
-        f"archive maintenance: converted={report.converted} orphans={report.orphan_icons_removed} normalized={report.normalized_moves}",
+        "archive maintenance: "
+        f"moved_images={cleanup.moved_images} deleted_invalid={cleanup.deleted_files} "
+        f"converted={report.converted} orphans={report.orphan_icons_removed} normalized={report.normalized_moves}",
         paths=paths,
     )
     publish_app_event(
         "archive-storage-maintained",
+        f"moved_images={cleanup.moved_images};deleted_invalid={cleanup.deleted_files};"
         f"converted={report.converted};orphans={report.orphan_icons_removed};normalized={report.normalized_moves}",
     )
     return report

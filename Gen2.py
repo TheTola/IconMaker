@@ -93,6 +93,7 @@ __all__ = [
 IMAGE_EXTS: set[str] = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".tif", ".svg"}
 
 DEFAULT_SIZES: List[int] = [16, 24, 32, 48, 64, 128, 256]
+ICO_MAX_SIZE = 256
 AUTO_FULL_SIZES: List[int] = list(range(8, 1025, 8))
 DEFAULT_ARCHIVE_STORAGE_ROOT = Path.home() / "Desktop"
 
@@ -345,6 +346,13 @@ def _normalize_sizes(sizes: Sequence[int]) -> List[int]:
     return sorted(set(out))
 
 
+def _normalize_ico_sizes(sizes: Sequence[int] | None) -> List[int]:
+    requested = _normalize_sizes(sizes or DEFAULT_SIZES)
+    supported = {n for n in requested if n <= ICO_MAX_SIZE}
+    supported.update(DEFAULT_SIZES)
+    return sorted(supported)
+
+
 def diagnose_image_discovery(input_path: Path, recursive: bool) -> ImageDiscoveryReport:
     input_path = Path(input_path)
 
@@ -584,7 +592,7 @@ def make_ico(
     if out_path.exists() and not overwrite:
         return True, f"SKIP: {src.name} -> {out_path.name} (exists)"
 
-    sizes_to_use = _normalize_sizes(sizes if sizes is not None else DEFAULT_SIZES)
+    sizes_to_use = _normalize_ico_sizes(sizes)
     if not sizes_to_use:
         return False, f"ERR: No valid sizes for {src.name}"
 
@@ -614,10 +622,10 @@ def make_ico(
         base_canvas = _pad_to_square_rgb(im, content_scale=content_scale)
 
     try:
-        max_s = max(sizes_to_use)
+        if base_canvas.width < ICO_MAX_SIZE:
+            base_canvas = base_canvas.resize((ICO_MAX_SIZE, ICO_MAX_SIZE), Image.LANCZOS)
 
-        base_large = base_canvas.resize((max_s, max_s), Image.LANCZOS)
-        base_large = base_large.convert("RGBA" if keep_alpha else "RGB")
+        base_large = base_canvas.convert("RGBA" if keep_alpha else "RGB")
 
         base_large.save(
             out_path,

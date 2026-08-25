@@ -59,5 +59,11 @@ def get_logger(name: str, *, base_dir: Optional[Path] = None) -> logging.Logger:
 def write_line(name: str, message: str, *, level: str = "info", base_dir: Optional[Path] = None) -> None:
     """Convenience wrapper for one-off writes from modules that do not manage loggers."""
     logger = get_logger(name, base_dir=base_dir)
-    fn = getattr(logger, str(level).lower(), logger.info)
-    fn(str(message))
+    try:
+        fn = getattr(logger, str(level).lower(), logger.info)
+        fn(str(message))
+    finally:
+        for handler in list(logger.handlers):
+            handler.flush()
+            handler.close()
+            logger.removeHandler(handler)

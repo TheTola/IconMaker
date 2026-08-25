@@ -41,7 +41,7 @@ from Gen4 import get_app_icon
 
 IS_WINDOWS = sys.platform.startswith("win")
 IS_MAC = sys.platform == "darwin"
-SAGE_URL = "https://chatgpt.com/g/g-68e8c5f35ff0819195a81c501942a072-sage-of-iconer"
+SAGE_TOOLTIP = "Open a ChatGPT expressly designed to help you create icons."
 
 APP_DIR = Path(__file__).resolve().parent
 ASSETS_DIR = APP_DIR / "assets"
@@ -912,9 +912,18 @@ class MainWindow(QtWidgets.QMainWindow):
             result = scan_and_convert()
             self._refresh_archive_view(immediate=True)
             self._update_workflow_actions()
-            if result.converted or result.deleted_orphans or result.mirrored_into_archive:
+            if (
+                result.converted
+                or result.deleted_orphans
+                or result.mirrored_into_archive
+                or result.moved_from_icons
+                or result.deleted_from_icons
+            ):
                 self._log(
-                    f"Startup scan complete. Imported={result.mirrored_into_archive} Converted={result.converted} Deleted={result.deleted_orphans}"
+                    "Startup scan complete. "
+                    f"Imported={result.mirrored_into_archive + result.moved_from_icons} "
+                    f"Converted={result.converted} "
+                    f"Deleted={result.deleted_orphans + result.deleted_from_icons}"
                 )
         except Exception as e:
             self._log(f"ERR: Startup scan failed: {type(e).__name__}: {e}", "ERR")
@@ -1019,10 +1028,10 @@ class MainWindow(QtWidgets.QMainWindow):
         sage_card.body_layout().addLayout(sage_layout)
 
         self.btn_sage = NeonRippleIconButton()
-        self.btn_sage.setToolTip(SAGE_URL)
+        self.btn_sage.setToolTip(SAGE_TOOLTIP)
         self.btn_sage.set_icon_from_png(SAGE_BUTTON_IMAGE_PATH)
         sage_layout.addWidget(self.btn_sage, 0, QtCore.Qt.AlignCenter)
-        self.btn_sage.clicked.connect(lambda: QtGui.QDesktopServices.openUrl(QtCore.QUrl(SAGE_URL)))
+        self.btn_sage.clicked.connect(self._open_sage_url)
 
         btn_row = QtWidgets.QHBoxLayout()
         btn_row.setSpacing(8)
@@ -1134,6 +1143,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_change_archive_storage.setCursor(QtCore.Qt.PointingHandCursor)
         self.chk_launch_tray_at_startup = QtWidgets.QCheckBox("Launch Tray at Startup")
         self.chk_launch_tray_at_startup.setChecked(GenOps.load_launch_tray_at_startup(self._settings))
+        self.edit_sage_url = QtWidgets.QLineEdit(GenOps.load_sage_url(self._settings))
+        self.edit_sage_url.setClearButtonEnabled(True)
+        self.edit_sage_url.setPlaceholderText("https://chatgpt.com/g/...")
+        self.btn_save_sage_url = QtWidgets.QPushButton("Save Sage ChatGPT Link")
+        self.btn_save_sage_url.setCursor(QtCore.Qt.PointingHandCursor)
 
         archive_grid.addWidget(QtWidgets.QLabel("Archive Storage Root"), 0, 0)
         archive_grid.addWidget(self.lbl_archive_storage_root, 0, 1)
@@ -1144,6 +1158,9 @@ class MainWindow(QtWidgets.QMainWindow):
         archive_grid.addWidget(self.btn_open_archive_storage_root, 3, 0, 1, 2)
         archive_grid.addWidget(self.btn_change_archive_storage, 4, 0, 1, 2)
         archive_grid.addWidget(self.chk_launch_tray_at_startup, 5, 0, 1, 2)
+        archive_grid.addWidget(QtWidgets.QLabel("Sage ChatGPT Link"), 6, 0)
+        archive_grid.addWidget(self.edit_sage_url, 6, 1)
+        archive_grid.addWidget(self.btn_save_sage_url, 7, 0, 1, 2)
         archive_layout.addStretch(1)
 
         img_page = QtWidgets.QWidget()
@@ -1447,6 +1464,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.btn_open_archive_storage_root.clicked.connect(lambda: _open_path(str(self.paths.storage_root)))
         self.btn_change_archive_storage.clicked.connect(self._change_archive_storage_location)  # type: ignore[arg-type]
+        self.btn_save_sage_url.clicked.connect(self._save_sage_url)
         self.btn_open_current_source_image.clicked.connect(self._open_current_source_image)
         self.btn_open_current_generated_icon.clicked.connect(self._open_current_generated_icon)
         self.chk_launch_tray_at_startup.toggled.connect(self._set_launch_tray_at_startup)
@@ -1609,7 +1627,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._update_workflow_actions()
 
     def _rebuild_archive_watch_paths(self) -> None:
-        self._set_archive_watch_paths({str(self.paths.images_dir)})
+        self._set_archive_watch_paths(set(GenOps.build_archive_storage_watch_paths(self.paths)))
 
     def _set_archive_watch_paths(self, desired_dirs: set[str]) -> None:
         existing_dirs = set(self._archive_fs_watcher.directories())
@@ -1622,7 +1640,15 @@ class MainWindow(QtWidgets.QMainWindow):
         if add_dirs:
             self._archive_fs_watcher.addPaths(add_dirs)
 
-    def _on_archive_storage_fs_changed(self, _path: str) -> None:
+    def _on_archive_storage_fs_changed(self, changed_path: str) -> None:
+        try:
+            Path(changed_path).resolve().relative_to(self.paths.icons_dir.resolve())
+        except Exception:
+            pass
+        else:
+            cleanup = GenOps.clean_generated_icons_dir(paths=self.paths, logfn=lambda s: self._log(s))
+            if cleanup.moved_images or cleanup.deleted_files:
+                self._rebuild_archive_watch_paths()
         self._refresh_archive_view()
 
     def _refresh_archive_view(self, immediate: bool = False) -> None:
@@ -1677,7 +1703,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 archive_icons_dir=self.paths.icons_dir,
             )
             self._set_archive_watch_paths(
-                {str(self.paths.images_dir)}
+                set(GenOps.build_archive_storage_watch_paths(self.paths))
                 | {str(Path(entry.path).parent) for entry in snapshot_list}
             )
             if self.archive_sidebar.current_path() is None:
@@ -1812,6 +1838,20 @@ class MainWindow(QtWidgets.QMainWindow):
         if source is None:
             return
         _open_path(str(source))
+
+    def _open_sage_url(self) -> None:
+        url = GenOps.load_sage_url(self._settings)
+        if not QtGui.QDesktopServices.openUrl(QtCore.QUrl(url)):
+            QtWidgets.QMessageBox.warning(self, "IconMaker", f"Could not open the Sage ChatGPT link:\n\n{url}")
+
+    def _save_sage_url(self) -> None:
+        try:
+            url = GenOps.save_sage_url(self.edit_sage_url.text(), self._settings)
+        except ValueError as exc:
+            QtWidgets.QMessageBox.warning(self, "Sage ChatGPT Link", str(exc))
+            return
+        self.edit_sage_url.setText(url)
+        self._log(f"Sage ChatGPT link updated: {url}")
 
     def _open_current_generated_icon(self) -> None:
         icon_path = self._current_generated_icon_path()

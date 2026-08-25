@@ -137,6 +137,8 @@ class ScanResult:
     converted: int
     deleted_orphans: int
     mirrored_into_archive: int
+    moved_from_icons: int
+    deleted_from_icons: int
 
 
 def scan_and_convert(*, autocrop: bool = False, padding_mode: str = "balanced") -> ScanResult:
@@ -149,6 +151,7 @@ def scan_and_convert(*, autocrop: bool = False, padding_mode: str = "balanced") 
     except Exception:
         pass
 
+    cleanup = GenOps.clean_generated_icons_dir(paths=paths, logfn=_log)
     mirrored = 0
     for root_raw in _load_watch_folders():
         watch_root = Path(root_raw)
@@ -181,12 +184,27 @@ def scan_and_convert(*, autocrop: bool = False, padding_mode: str = "balanced") 
         orphan_action="delete",
         logfn=_log,
     )
-    if mirrored or report.converted or report.orphan_icons_removed or report.normalized_moves:
+    if (
+        cleanup.moved_images
+        or cleanup.deleted_files
+        or mirrored
+        or report.converted
+        or report.orphan_icons_removed
+        or report.normalized_moves
+    ):
         GenOps.publish_app_event(
             "archive-storage-changed",
+            f"moved_images={cleanup.moved_images};deleted_invalid={cleanup.deleted_files};"
             f"mirrored={mirrored};converted={report.converted};orphans={report.orphan_icons_removed}",
         )
-    return ScanResult(report.scanned, report.converted, report.orphan_icons_removed, mirrored)
+    return ScanResult(
+        report.scanned,
+        report.converted,
+        report.orphan_icons_removed,
+        mirrored,
+        cleanup.moved_images,
+        cleanup.deleted_files,
+    )
 
 
 class TrayAgent(QtWidgets.QSystemTrayIcon):
@@ -269,10 +287,18 @@ class TrayAgent(QtWidgets.QSystemTrayIcon):
             return
         self._scan_busy = False
         self._attach_watch()
-        if result.converted or result.deleted_orphans or result.mirrored_into_archive:
+        if (
+            result.converted
+            or result.deleted_orphans
+            or result.mirrored_into_archive
+            or result.moved_from_icons
+            or result.deleted_from_icons
+        ):
             self.showMessage(
                 "IconMaker",
-                f"Imported: {result.mirrored_into_archive}   Converted: {result.converted}   Deleted: {result.deleted_orphans}",
+                f"Imported: {result.mirrored_into_archive + result.moved_from_icons}   "
+                f"Converted: {result.converted}   "
+                f"Deleted: {result.deleted_orphans + result.deleted_from_icons}",
                 QtWidgets.QSystemTrayIcon.Information,
                 2500,
             )
