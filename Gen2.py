@@ -16,6 +16,8 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
+import tempfile
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
@@ -98,6 +100,7 @@ IMAGE_EXTS: set[str] = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".tif
 DEFAULT_SIZES: List[int] = [16, 24, 32, 48, 64, 128, 256]
 QUALITY_SIZES = (8, 16, 24, 32, 48, 64, 96, 128, 256)
 ICO_MAX_SIZE = 256
+ICON_WRITE_TEMP_PREFIX = ".iconmaker-"
 AUTO_FULL_SIZES: List[int] = list(range(8, 1025, 8))
 DEFAULT_ARCHIVE_STORAGE_ROOT = Path.home() / "Desktop"
 
@@ -703,17 +706,27 @@ def make_ico(
         im = im.convert("RGBA").convert("RGB")
         base_canvas = _pad_to_square_rgb(im, content_scale=content_scale)
 
+    temporary_path: Path | None = None
     try:
         if base_canvas.width < ICO_MAX_SIZE:
             base_canvas = base_canvas.resize((ICO_MAX_SIZE, ICO_MAX_SIZE), Image.LANCZOS)
 
         base_large = base_canvas.convert("RGBA" if keep_alpha else "RGB")
 
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=ICON_WRITE_TEMP_PREFIX,
+            suffix=".tmp",
+            dir=out_dir,
+        )
+        os.close(descriptor)
+        temporary_path = Path(temporary_name)
         base_large.save(
-            out_path,
+            temporary_path,
             format="ICO",
             sizes=[(s, s) for s in sizes_to_use],
         )
+        os.replace(temporary_path, out_path)
+        temporary_path = None
 
         msg = (
             f"OK: {src.name} -> {out_path.name} "
@@ -726,6 +739,12 @@ def make_ico(
         msg = f"ERR: Failed to write {out_path.name}: {type(e).__name__}: {e}"
         _safe_log(logfn, msg)
         return False, msg
+    finally:
+        if temporary_path is not None:
+            try:
+                temporary_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 # =========================
@@ -976,11 +995,12 @@ def _scan_counts_only(
             suffix=suffix,
         )
 
+    # In no-overwrite mode, tasks already contains only missing or outdated icons.
     ok, _skipped, failed = convert_many(
         tasks,
         sizes=_normalize_sizes(list(sizes)),
         suffix=suffix,
-        overwrite=overwrite,
+        overwrite=True,
         keep_alpha=keep_alpha,
         autocrop=autocrop,
         padding_mode=padding_mode,

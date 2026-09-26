@@ -344,6 +344,12 @@ def clean_generated_icons_dir(
     for path in files:
         if path.suffix.lower() == ".ico":
             continue
+        if path.name.startswith(eng.ICON_WRITE_TEMP_PREFIX) and path.suffix == ".tmp":
+            try:
+                if time.time() - path.stat().st_mtime < 24 * 60 * 60:
+                    continue
+            except FileNotFoundError:
+                continue
 
         try:
             if path.suffix.lower() in eng.IMAGE_EXTS:

@@ -17,7 +17,7 @@ import subprocess
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Iterable
+from typing import Callable, Optional, Iterable
 
 from StateMemory import StateMemory
 
@@ -134,17 +134,6 @@ def _build_archive_import_jobs(paths: Iterable[Path]) -> list[tuple[Path, Path |
                 jobs.append((Path(image), p))
 
     return jobs
-
-
-def _gather_images(input_path: Path, recursive: bool) -> list[Path]:
-    """
-    Turn a user input (file/folder) into a concrete list of image files.
-    """
-    if input_path.is_file():
-        return [input_path] if _is_image_file(input_path) else []
-    if input_path.is_dir():
-        return list(eng.find_images(input_path, recursive=recursive))
-    return []
 
 
 def _pre_app_setup() -> None:
@@ -673,6 +662,29 @@ def choose_archive_storage_root(parent) -> Path | None:
     return Path(p) if p else None
 
 
+class OperationWorker(QtCore.QObject):
+    completed = QtCore.Signal(object)
+    failed = QtCore.Signal(str)
+    progress = QtCore.Signal(int, int, str)
+    message = QtCore.Signal(str)
+
+    def __init__(self, work: Callable[..., object]) -> None:
+        super().__init__()
+        self.work = work
+
+    @QtCore.Slot()
+    def run(self) -> None:
+        try:
+            result = self.work(
+                self.progress.emit,
+                self.message.emit,
+                lambda: bool(self.thread() and self.thread().isInterruptionRequested()),
+            )
+            self.completed.emit(result)
+        except Exception as exc:
+            self.failed.emit(f"{type(exc).__name__}: {exc}")
+
+
 class ArchiveRefreshWorker(QtCore.QObject):
     """
     Build archive snapshots away from the UI thread.
@@ -821,7 +833,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self._log_pending: list[LogLine] = []
 
         self._run_in_progress: bool = False
-        self._cancel_requested = False
+        self._operation_kind: str | None = None
+        self._operation_thread: QtCore.QThread | None = None
+        self._operation_worker: OperationWorker | None = None
+        self._operation_result: object | None = None
+        self._operation_error: str | None = None
+        self._close_when_idle = False
 
         root = GenOps.load_archive_storage_root(self._settings)
 
@@ -896,25 +913,7 @@ class MainWindow(QtWidgets.QMainWindow):
         QtCore.QTimer.singleShot(0, self._startup_scan)
 
     def _startup_scan(self) -> None:
-        try:
-            result = scan_and_convert()
-            self._refresh_archive_view(immediate=True)
-            self._update_workflow_actions()
-            if (
-                result.converted
-                or result.deleted_orphans
-                or result.mirrored_into_archive
-                or result.moved_from_icons
-                or result.deleted_from_icons
-            ):
-                self._log(
-                    "Startup scan complete. "
-                    f"Imported={result.mirrored_into_archive + result.moved_from_icons} "
-                    f"Converted={result.converted} "
-                    f"Deleted={result.deleted_orphans + result.deleted_from_icons}"
-                )
-        except Exception as e:
-            self._log(f"ERR: Startup scan failed: {type(e).__name__}: {e}", "ERR")
+        self._start_operation("startup", lambda *_: scan_and_convert(), "Scanning archive...")
 
     def _set_archive_storage_paths(self, archive_storage_root: Path) -> None:
         root = Path(archive_storage_root).resolve()
@@ -1604,11 +1603,7 @@ class MainWindow(QtWidgets.QMainWindow):
         """Exit the UI and tray together through the shared app-event channel."""
         self.state.flush_pending_save(self)
         GenOps.publish_app_event("quit-all", "settings-exit")
-        app = QtWidgets.QApplication.instance()
-        if app is not None:
-            QtCore.QTimer.singleShot(120, app.quit)
-        else:
-            self.close()
+        QtCore.QTimer.singleShot(120, self.close)
 
     def _set_launch_tray_at_startup(self, enabled: bool) -> None:
         """Persist and apply the user's tray-at-startup preference."""
@@ -1820,10 +1815,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.btn_run.setEnabled(False)
             return
 
-        recursive = self.chk_recursive.isChecked()
-        images = _gather_images(p, recursive=recursive)
-
-        if not images:
+        if not (p.is_dir() or _is_image_file(p)):
             self.btn_run.setEnabled(False)
             return
 
@@ -2075,27 +2067,22 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._run_in_progress:
             return
         self._log(f"=== MAINTENANCE ({reason}) ===")
-        self.status_line.setText(f"Updating archive... ({reason})")
-        try:
-            report = GenOps.run_archive_maintenance(
-                paths=self.paths,
-                overwrite=self.chk_overwrite.isChecked(),
-                sizes=preset_sizes(self.quality_preset()),
-                padding_mode=self.cmb_padding.currentText(),
+        paths = self.paths
+        overwrite = self.chk_overwrite.isChecked()
+        sizes = preset_sizes(self.quality_preset())
+        padding_mode = self.cmb_padding.currentText()
+        self._start_operation(
+            "maintenance",
+            lambda _progress, log, _cancelled: GenOps.run_archive_maintenance(
+                paths=paths,
+                overwrite=overwrite,
+                sizes=sizes,
+                padding_mode=padding_mode,
                 autocrop=False,
-                logfn=lambda s: self._log(s),
-            )
-            self._log(
-                "Archive maintenance done. "
-                f"scanned={report.scanned} converted={report.converted} "
-                f"orphans_removed={report.orphan_icons_removed}"
-            )
-        except Exception as e:
-            self._log(f"ERR: Maintenance failed: {e}", "ERR")
-        finally:
-            self._refresh_archive_view(immediate=True)
-            self.status_line.setText("Ready.")
-            self._update_workflow_actions()
+                logfn=log,
+            ),
+            f"Updating archive... ({reason})",
+        )
 
     def _poll_app_events(self, force: bool = False) -> None:
         event = GenOps.latest_app_event()
@@ -2103,11 +2090,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         self._last_seen_event_seq = event.seq
         if not force and event.event_type == "quit-all":
-            app = QtWidgets.QApplication.instance()
-            if app is not None:
-                app.quit()
-            else:
-                self.close()
+            self.close()
             return
         if force or event.event_type in {
             "archive-storage-changed",
@@ -2193,8 +2176,100 @@ class MainWindow(QtWidgets.QMainWindow):
             f"Archive storage moved to:\n{new_root}\n\nThe old Icon Images folder remains at:\n{old_images_dir}",
         )
 
+    def _start_operation(self, kind: str, work: Callable[..., object], status: str) -> None:
+        if self._run_in_progress:
+            return
+        self._run_in_progress = True
+        self._operation_kind = kind
+        self._operation_result = None
+        self._operation_error = None
+        self.status_line.setText(status)
+        self._set_run_ui_enabled(False)
+
+        thread = QtCore.QThread(self)
+        worker = OperationWorker(work)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.progress.connect(self._on_operation_progress)
+        worker.message.connect(self._log)
+        worker.completed.connect(self._on_operation_result)
+        worker.failed.connect(self._on_operation_failed)
+        worker.completed.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._finish_operation)
+        self._operation_thread = thread
+        self._operation_worker = worker
+        thread.start()
+
+    def _on_operation_progress(self, done: int, total: int, current: str) -> None:
+        self.status_line.setText(current)
+        self.bar.setValue(int((done * 100) / max(1, total)))
+
+    def _on_operation_result(self, result: object) -> None:
+        self._operation_result = result
+
+    def _on_operation_failed(self, message: str) -> None:
+        self._operation_error = message
+
+    def _finish_operation(self) -> None:
+        kind = self._operation_kind
+        result = self._operation_result
+        error = self._operation_error
+        self._operation_thread = None
+        self._operation_worker = None
+        self._operation_kind = None
+        self._run_in_progress = False
+        self._set_run_ui_enabled(True)
+        self._update_run_state()
+
+        if error or result is None:
+            self._log(f"ERR: {kind} failed: {error or 'No result returned.'}", "ERR")
+            self.status_line.setText(f"ERR: {kind} failed.")
+            if kind == "conversion":
+                self.bar.setValue(0)
+        elif kind == "conversion":
+            self.status_line.setText(result.message)
+            if result.ok:
+                self.bar.setValue(100)
+            if result.converted > 0:
+                self.archive_sidebar.expand()
+        elif kind == "maintenance":
+            self._log(
+                "Archive maintenance done. "
+                f"scanned={result.scanned} converted={result.converted} "
+                f"orphans_removed={result.orphan_icons_removed}"
+            )
+            self.status_line.setText("Ready.")
+        elif kind == "startup":
+            if (
+                result.converted
+                or result.deleted_orphans
+                or result.mirrored_into_archive
+                or result.moved_from_icons
+                or result.deleted_from_icons
+            ):
+                self._log(
+                    "Startup scan complete. "
+                    f"Imported={result.mirrored_into_archive + result.moved_from_icons} "
+                    f"Converted={result.converted} "
+                    f"Deleted={result.deleted_orphans + result.deleted_from_icons}"
+                )
+            self.status_line.setText("Ready.")
+
+        if self._close_when_idle:
+            QtCore.QTimer.singleShot(0, self.close)
+            return
+        self._refresh_archive_view(immediate=kind != "conversion")
+        self._update_workflow_actions()
+
     def _cancel(self) -> None:
-        self._cancel_requested = True
+        if self._operation_kind != "conversion" or self._operation_thread is None:
+            return
+        if self._operation_thread.isInterruptionRequested():
+            return
+        self._operation_thread.requestInterruption()
         self.btn_cancel.setEnabled(False)
         self._log("Cancel requested.", "WARN")
 
@@ -2212,7 +2287,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.archive_sidebar.setEnabled(enabled)
         self.btn_change_archive_storage.setEnabled(enabled)
         self.btn_settings_exit.setEnabled(enabled)
-        self.btn_cancel.setEnabled(not enabled)
+        self.btn_cancel.setEnabled(not enabled and self._operation_kind == "conversion")
 
     def _run_convert(self) -> None:
         if self._run_in_progress:
@@ -2228,11 +2303,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._log("ERR: Input path does not exist.", "ERR")
             return
 
-        self._cancel_requested = False
-        self._run_in_progress = True
         self.bar.setValue(0)
-        self.status_line.setText("Starting...")
-        self._set_run_ui_enabled(False)
 
         sizes = preset_sizes(self.quality_preset())
 
@@ -2259,35 +2330,16 @@ class MainWindow(QtWidgets.QMainWindow):
             mirror=True,
         )
 
-        try:
-            def progress(done: int, total: int, current: str) -> None:
-                self.status_line.setText(current)
-                self.bar.setValue(int((done * 100) / max(1, total)))
-                QtWidgets.QApplication.processEvents()
-
-            result = GenOps.run_conversion(
+        self._start_operation(
+            "conversion",
+            lambda progress, log, cancelled: GenOps.run_conversion(
                 request,
                 progress_cb=progress,
-                logfn=lambda s: self._log(s),
-                is_cancelled=lambda: self._cancel_requested,
-            )
-        except Exception as e:
-            self._log(f"ERR: Conversion failed: {type(e).__name__}: {e}", "ERR")
-            self.status_line.setText("ERR: Conversion crashed.")
-            self.bar.setValue(0)
-            return
-        finally:
-            self._run_in_progress = False
-            self._set_run_ui_enabled(True)
-            QtCore.QTimer.singleShot(0, self._update_run_state)
-            QtCore.QTimer.singleShot(0, self._update_workflow_actions)
-
-        self.status_line.setText(result.message)
-        if result.ok:
-            self.bar.setValue(100)
-        if result.converted > 0:
-            self.archive_sidebar.expand()
-        self._refresh_archive_view()
+                logfn=log,
+                is_cancelled=cancelled,
+            ),
+            "Starting...",
+        )
 
     def dragEnterEvent(self, e: QtGui.QDragEnterEvent) -> None:
         if e.mimeData().hasUrls():
@@ -2343,7 +2395,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def closeEvent(self, event) -> None:
         if self._run_in_progress:
-            self._cancel()
+            self._close_when_idle = True
+            if self._operation_kind == "conversion":
+                self._cancel()
             event.ignore()
             return
         if hasattr(self, "state"):

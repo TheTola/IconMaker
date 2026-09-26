@@ -141,6 +141,20 @@ class ScanResult:
     deleted_from_icons: int
 
 
+class TrayScanWorker(QtCore.QObject):
+    completed = QtCore.Signal(object, object)
+    failed = QtCore.Signal(str)
+
+    @QtCore.Slot()
+    def run(self) -> None:
+        try:
+            result = scan_and_convert()
+            watch_paths = _build_watch_paths(_current_engine_paths(), _load_watch_folders())
+            self.completed.emit(result, watch_paths)
+        except Exception as exc:
+            self.failed.emit(f"{type(exc).__name__}: {exc}")
+
+
 def scan_and_convert(*, autocrop: bool = False, padding_mode: str = "balanced") -> ScanResult:
     paths = _current_engine_paths()
     archive_sources_dir = paths.images_dir
@@ -220,6 +234,12 @@ class TrayAgent(QtWidgets.QSystemTrayIcon):
         self.setToolTip(f"{APP_DISPLAY_VERSION} - background agent")
         self._scan_busy = False
         self._scan_pending = False
+        self._scan_thread: QtCore.QThread | None = None
+        self._scan_worker: TrayScanWorker | None = None
+        self._scan_result: ScanResult | None = None
+        self._scan_watch_paths: List[str] = []
+        self._scan_error: str | None = None
+        self._quit_requested = False
         self._last_seen_event_seq = 0
         self.menu = QtWidgets.QMenu()
         self.menu.addAction("Open IconMaker", self.open_gen1)
@@ -239,17 +259,14 @@ class TrayAgent(QtWidgets.QSystemTrayIcon):
         self._event_timer = QtCore.QTimer(self)
         self._event_timer.setInterval(900)
         self._event_timer.timeout.connect(self._poll_app_events)
-        self._attach_watch()
         self._periodic.start()
         self._event_timer.start()
+        app.aboutToQuit.connect(self._wait_for_scan)
         QtCore.QTimer.singleShot(100, self._scan_now)
         QtCore.QTimer.singleShot(250, lambda: self._poll_app_events(force=True))
         self.show()
 
-    def _watch_paths(self) -> List[str]:
-        return _build_watch_paths(_current_engine_paths(), _load_watch_folders())
-
-    def _attach_watch(self) -> None:
+    def _attach_watch(self, paths: List[str]) -> None:
         # Watch paths are rebuilt after scans so new subfolders become visible
         # without requiring the user to restart the tray worker.
         try:
@@ -262,7 +279,6 @@ class TrayAgent(QtWidgets.QSystemTrayIcon):
             self.watcher.directoryChanged.disconnect()
         except Exception:
             pass
-        paths = self._watch_paths()
         if paths:
             try:
                 self.watcher.addPaths(paths)
@@ -271,6 +287,8 @@ class TrayAgent(QtWidgets.QSystemTrayIcon):
         self.watcher.directoryChanged.connect(lambda *_: self._debounce.start())
 
     def _scan_now(self) -> None:
+        if self._quit_requested:
+            return
         if GenOps.is_archive_storage_paused():
             _log("Scan skipped: archive storage paused")
             return
@@ -279,20 +297,50 @@ class TrayAgent(QtWidgets.QSystemTrayIcon):
             return
         self._scan_busy = True
         self._scan_pending = False
-        try:
-            result = scan_and_convert()
-        except Exception as exc:
-            _log(f"Scan failure: {type(exc).__name__}: {exc}", level="error")
-            self._scan_busy = False
-            return
+        self._scan_result = None
+        self._scan_watch_paths = []
+        self._scan_error = None
+        thread = QtCore.QThread(self)
+        worker = TrayScanWorker()
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.completed.connect(self._on_scan_result)
+        worker.failed.connect(self._on_scan_error)
+        worker.completed.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._scan_finished)
+        self._scan_thread = thread
+        self._scan_worker = worker
+        thread.start()
+
+    def _on_scan_result(self, result: ScanResult, paths: List[str]) -> None:
+        self._scan_result = result
+        self._scan_watch_paths = paths
+
+    def _on_scan_error(self, message: str) -> None:
+        self._scan_error = message
+
+    def _scan_finished(self) -> None:
+        result = self._scan_result
+        error = self._scan_error
+        self._scan_thread = None
+        self._scan_worker = None
         self._scan_busy = False
-        self._attach_watch()
+        if error:
+            _log(f"Scan failure: {error}", level="error")
+        elif result is not None:
+            self._attach_watch(self._scan_watch_paths)
         if (
-            result.converted
-            or result.deleted_orphans
-            or result.mirrored_into_archive
-            or result.moved_from_icons
-            or result.deleted_from_icons
+            result is not None
+            and (
+                result.converted
+                or result.deleted_orphans
+                or result.mirrored_into_archive
+                or result.moved_from_icons
+                or result.deleted_from_icons
+            )
         ):
             self.showMessage(
                 "IconMaker",
@@ -302,8 +350,18 @@ class TrayAgent(QtWidgets.QSystemTrayIcon):
                 QtWidgets.QSystemTrayIcon.Information,
                 2500,
             )
+        if self._quit_requested:
+            app = QtWidgets.QApplication.instance()
+            if app is not None:
+                app.quit()
+            return
         if self._scan_pending:
             QtCore.QTimer.singleShot(200, self._scan_now)
+
+    def _wait_for_scan(self) -> None:
+        if self._scan_thread is not None:
+            self._scan_thread.quit()
+            self._scan_thread.wait()
 
     def _on_click(self, reason) -> None:
         if reason == QtWidgets.QSystemTrayIcon.Trigger and self.contextMenu():
@@ -312,6 +370,12 @@ class TrayAgent(QtWidgets.QSystemTrayIcon):
     def _quit_all(self) -> None:
         """Exit both the tray worker and any running UI through the shared app-event channel."""
         GenOps.publish_app_event("quit-all", "tray-menu")
+        self._request_quit()
+
+    def _request_quit(self) -> None:
+        self._quit_requested = True
+        if self._scan_busy:
+            return
         app = QtWidgets.QApplication.instance()
         if app is not None:
             app.quit()
@@ -322,12 +386,10 @@ class TrayAgent(QtWidgets.QSystemTrayIcon):
             return
         self._last_seen_event_seq = event.seq
         if not force and event.event_type == "quit-all":
-            app = QtWidgets.QApplication.instance()
-            if app is not None:
-                app.quit()
+            self._request_quit()
             return
-        if force or event.event_type == "archive-storage-relocated":
-            self._attach_watch()
+        if not force and event.event_type in {"archive-storage-relocated", "archive-storage-resumed"}:
+            self._scan_now()
 
     def _run_detached(self, argv: List[str]) -> bool:
         try:
