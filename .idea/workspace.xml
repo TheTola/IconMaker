@@ -5,15 +5,7 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="eb7c0f07-7f6d-4595-a872-39c0ddd0ba35" name="Changes" comment="Final Version">
-      <change beforePath="$PROJECT_DIR$/.idea/IconMaker.iml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/IconMaker.iml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Gen1.py" beforeDir="false" afterPath="$PROJECT_DIR$/Gen1.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Gen2.py" beforeDir="false" afterPath="$PROJECT_DIR$/Gen2.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Gen3.py" beforeDir="false" afterPath="$PROJECT_DIR$/Gen3.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Gen4.py" beforeDir="false" afterPath="$PROJECT_DIR$/Gen4.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/GenLog.py" beforeDir="false" afterPath="$PROJECT_DIR$/GenLog.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/GenOps.py" beforeDir="false" afterPath="$PROJECT_DIR$/GenOps.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/IconMaker.spec" beforeDir="false" afterPath="$PROJECT_DIR$/IconMaker.spec" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -31,12 +23,12 @@
     &quot;assignee&quot;: &quot;TheTola&quot;
   }
 }</component>
-  <component name="GithubPullRequestsUISettings">{
-  &quot;selectedUrlAndAccountId&quot;: {
-    &quot;url&quot;: &quot;https://github.com/TheTola/IconMaker.git&quot;,
-    &quot;accountId&quot;: &quot;2d398a9e-3ea3-4c27-8b45-75beb543c266&quot;
+  <component name="GithubPullRequestsUISettings"><![CDATA[{
+  "selectedUrlAndAccountId": {
+    "url": "https://github.com/TheTola/IconMaker.git",
+    "accountId": "ed5b2027-da74-46d8-8987-20d76e22de5d"
   }
-}</component>
+}]]></component>
   <component name="ProblemsViewState">
     <option name="selectedTabId" value="ProjectErrors" />
   </component>
@@ -51,53 +43,55 @@
     <option name="hideEmptyMiddlePackages" value="true" />
     <option name="showLibraryContents" value="true" />
   </component>
-  <component name="PropertiesComponent">{
-  &quot;keyToString&quot;: {
-    &quot;ModuleVcsDetector.initialDetectionPerformed&quot;: &quot;true&quot;,
-    &quot;Python.Gen1 (1).executor&quot;: &quot;Run&quot;,
-    &quot;Python.Gen1.executor&quot;: &quot;Run&quot;,
-    &quot;Python.Gen1_FULL_FIXED.executor&quot;: &quot;Run&quot;,
-    &quot;Python.Gen1_compact_sidebar.executor&quot;: &quot;Run&quot;,
-    &quot;Python.Gen1_drawer_version.executor&quot;: &quot;Run&quot;,
-    &quot;Python.Gen2.executor&quot;: &quot;Run&quot;,
-    &quot;Python.Gen3.executor&quot;: &quot;Run&quot;,
-    &quot;Python.GenArchive.executor&quot;: &quot;Run&quot;,
-    &quot;Python.GenName.executor&quot;: &quot;Run&quot;,
-    &quot;Python.GenOps.executor&quot;: &quot;Run&quot;,
-    &quot;Python.IconMaker.executor&quot;: &quot;Run&quot;,
-    &quot;Python.IconMakerMaster.executor&quot;: &quot;Run&quot;,
-    &quot;Python.Main.executor&quot;: &quot;Run&quot;,
-    &quot;Python.StateMemory.executor&quot;: &quot;Run&quot;,
-    &quot;Python.faction_prime.executor&quot;: &quot;Run&quot;,
-    &quot;Python.main.executor&quot;: &quot;Run&quot;,
-    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
-    &quot;RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252&quot;: &quot;true&quot;,
-    &quot;RunOnceActivity.git.unshallow&quot;: &quot;true&quot;,
-    &quot;RunOnceActivity.typescript.service.memoryLimit.init&quot;: &quot;true&quot;,
-    &quot;codeWithMe.voiceChat.enabledByDefault&quot;: &quot;false&quot;,
-    &quot;com.intellij.ml.llm.matterhorn.ej.ui.settings.DefaultAutoModeForALLUsers.v1&quot;: &quot;true&quot;,
-    &quot;com.intellij.ml.llm.matterhorn.ej.ui.settings.DefaultModelSelectionForGA.v1&quot;: &quot;true&quot;,
-    &quot;git-widget-placeholder&quot;: &quot;master&quot;,
-    &quot;junie.onboarding.icon.badge.shown&quot;: &quot;true&quot;,
-    &quot;last_opened_file_path&quot;: &quot;C:/Users/Oluwatola Ayedun/Desktop/Prime/IconMaker&quot;,
-    &quot;node.js.detected.package.eslint&quot;: &quot;true&quot;,
-    &quot;node.js.detected.package.tslint&quot;: &quot;true&quot;,
-    &quot;node.js.selected.package.eslint&quot;: &quot;(autodetect)&quot;,
-    &quot;node.js.selected.package.tslint&quot;: &quot;(autodetect)&quot;,
-    &quot;nodejs_package_manager_path&quot;: &quot;npm&quot;,
-    &quot;run.code.analysis.last.selected.profile&quot;: &quot;pProject Default&quot;,
-    &quot;settings.editor.selected.configurable&quot;: &quot;vcs.Git&quot;,
-    &quot;to.speed.mode.migration.done&quot;: &quot;true&quot;,
-    &quot;vue.rearranger.settings.migration&quot;: &quot;true&quot;
+  <component name="PropertiesComponent"><![CDATA[{
+  "keyToString": {
+    "ModuleVcsDetector.initialDetectionPerformed": "true",
+    "Python.Gen1 (1).executor": "Run",
+    "Python.Gen1.executor": "Run",
+    "Python.Gen1_FULL_FIXED.executor": "Run",
+    "Python.Gen1_compact_sidebar.executor": "Run",
+    "Python.Gen1_drawer_version.executor": "Run",
+    "Python.Gen2.executor": "Run",
+    "Python.Gen3.executor": "Run",
+    "Python.GenArchive.executor": "Run",
+    "Python.GenName.executor": "Run",
+    "Python.GenOps.executor": "Run",
+    "Python.IconMaker.executor": "Run",
+    "Python.IconMakerMaster.executor": "Run",
+    "Python.Main.executor": "Run",
+    "Python.StateMemory.executor": "Run",
+    "Python.faction_prime.executor": "Run",
+    "Python.main.executor": "Run",
+    "RunOnceActivity.ShowReadmeOnStart": "true",
+    "RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252": "true",
+    "RunOnceActivity.git.unshallow": "true",
+    "RunOnceActivity.typescript.service.memoryLimit.init": "true",
+    "codeWithMe.voiceChat.enabledByDefault": "false",
+    "com.intellij.ml.llm.matterhorn.ej.ui.settings.DefaultAutoModeForALLUsers.v1": "true",
+    "com.intellij.ml.llm.matterhorn.ej.ui.settings.DefaultModelSelectionForGA.v1": "true",
+    "git-widget-placeholder": "master",
+    "ignore.virus.scanning.warn.message": "true",
+    "junie.onboarding.icon.badge.shown": "true",
+    "last_opened_file_path": "C:/Users/Oluwatola Ayedun/Desktop/Prime/IconMaker",
+    "node.js.detected.package.eslint": "true",
+    "node.js.detected.package.tslint": "true",
+    "node.js.selected.package.eslint": "(autodetect)",
+    "node.js.selected.package.tslint": "(autodetect)",
+    "nodejs_package_manager_path": "npm",
+    "python.packages.toolwindow.project.migrated.to.right.top.v2": "true",
+    "run.code.analysis.last.selected.profile": "pProject Default",
+    "settings.editor.selected.configurable": "vcs.Git",
+    "to.speed.mode.migration.done": "true",
+    "vue.rearranger.settings.migration": "true"
   },
-  &quot;keyToStringList&quot;: {
-    &quot;GitStage.ChangesTree.GroupingKeys&quot;: [
-      &quot;directory&quot;,
-      &quot;module&quot;,
-      &quot;repository&quot;
+  "keyToStringList": {
+    "GitStage.ChangesTree.GroupingKeys": [
+      "directory",
+      "module",
+      "repository"
     ]
   }
-}</component>
+}]]></component>
   <component name="RunManager" selected="Python.Gen1">
     <configuration name="Gen1 (1)" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
       <module name="IconMaker" />
@@ -159,7 +153,7 @@
   <component name="SharedIndexes">
     <attachedChunks>
       <set>
-        <option value="bundled-python-sdk-821f704e66d9-5bd6d13a2a75-com.jetbrains.pycharm.pro.sharedIndexes.bundled-PY-262.9437.214" />
+        <option value="bundled-python-sdk-73a66231627c-5bd6d13a2a75-com.jetbrains.pycharm.pro.sharedIndexes.bundled-PY-262.10968.92" />
       </set>
     </attachedChunks>
   </component>
@@ -287,7 +281,23 @@
       <option name="project" value="LOCAL" />
       <updated>1776366152387</updated>
     </task>
-    <option name="localTasksCounter" value="15" />
+    <task id="LOCAL-00015" summary="Final Version">
+      <option name="closed" value="true" />
+      <created>1787630537577</created>
+      <option name="number" value="00015" />
+      <option name="presentableId" value="LOCAL-00015" />
+      <option name="project" value="LOCAL" />
+      <updated>1787630537577</updated>
+    </task>
+    <task id="LOCAL-00016" summary="Final Version">
+      <option name="closed" value="true" />
+      <created>1787630544991</created>
+      <option name="number" value="00016" />
+      <option name="presentableId" value="LOCAL-00016" />
+      <option name="project" value="LOCAL" />
+      <updated>1787630544991</updated>
+    </task>
+    <option name="localTasksCounter" value="17" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
