@@ -176,7 +176,7 @@ def scan_and_convert(*, autocrop: bool = False, padding_mode: str = "balanced") 
 
     report = eng.scan_archive_sources_and_convert(
         paths=paths,
-        sizes=ALL_SIZES,
+        sizes=eng.quality_preset_sizes(str(_qsettings().value("last_quality", "16-256") or "16-256")),
         overwrite=False,
         autocrop=autocrop,
         padding_mode=padding_mode,

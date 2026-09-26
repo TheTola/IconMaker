@@ -148,17 +148,18 @@ class StateMemory:
         recursive = bool(self.settings.value(self.k.last_recursive, False, type=bool))
         overwrite = bool(self.settings.value(self.k.last_overwrite, True, type=bool))
         padding = str(self.settings.value(self.k.last_padding, "") or "").strip()
-        quality = str(self.settings.value(self.k.last_quality, "16-1024") or "16-1024").strip()
+        quality = str(self.settings.value(self.k.last_quality, "16-256") or "16-256").strip()
 
         input_edit = self._require_attr(widget, "edit_input")
         output_label = self._optional_attr(widget, "lbl_generated_icons_dir", "lbl_outdir")
         chk_recursive = self._require_attr(widget, "chk_recursive")
         chk_overwrite = self._require_attr(widget, "chk_overwrite")
         cmb_padding = self._require_attr(widget, "cmb_padding")
-        cmb_quality = self._require_attr(widget, "cmb_quality")
+        cmb_quality_min = self._require_attr(widget, "cmb_quality_min")
+        cmb_quality_max = self._require_attr(widget, "cmb_quality_max")
 
         blockers: list[QtCore.QSignalBlocker] = []
-        for obj in (input_edit, output_label, chk_recursive, chk_overwrite, cmb_padding, cmb_quality):
+        for obj in (input_edit, output_label, chk_recursive, chk_overwrite, cmb_padding, cmb_quality_min, cmb_quality_max):
             if obj is None:
                 continue
             try:
@@ -201,9 +202,7 @@ class StateMemory:
             self._warn("restoring padding failed", exc)
 
         try:
-            index = cmb_quality.findText(quality)
-            if index >= 0:
-                cmb_quality.setCurrentIndex(index)
+            widget.set_quality_preset(quality)
         except Exception as exc:
             self._warn("restoring quality failed", exc)
 
@@ -218,7 +217,8 @@ class StateMemory:
         chk_recursive = self._require_attr(widget, "chk_recursive")
         chk_overwrite = self._require_attr(widget, "chk_overwrite")
         cmb_padding = self._require_attr(widget, "cmb_padding")
-        cmb_quality = self._require_attr(widget, "cmb_quality")
+        self._require_attr(widget, "cmb_quality_min")
+        self._require_attr(widget, "cmb_quality_max")
 
         input_path = self._read_text_widget(input_edit, "input_edit")
         output_path = self._read_text_widget(output_label, "output_label") if output_label is not None else ""
@@ -247,7 +247,7 @@ class StateMemory:
             self._warn("saving padding failed", exc)
 
         try:
-            self.settings.setValue(self.k.last_quality, str(cmb_quality.currentText()).strip())
+            self.settings.setValue(self.k.last_quality, widget.quality_preset())
         except Exception as exc:
             self._warn("saving quality failed", exc)
 
@@ -295,11 +295,12 @@ class StateMemory:
         except Exception as exc:
             self._warn("connecting autosave for cmb_padding failed", exc)
 
-        cmb_quality = self._require_attr(widget, "cmb_quality")
-        try:
-            cmb_quality.currentIndexChanged.connect(lambda _=None, win=widget: self._schedule_save(win))
-        except Exception as exc:
-            self._warn("connecting autosave for cmb_quality failed", exc)
+        for name in ("cmb_quality_min", "cmb_quality_max"):
+            combo = self._require_attr(widget, name)
+            try:
+                combo.currentIndexChanged.connect(lambda _=None, win=widget: self._schedule_save(win))
+            except Exception as exc:
+                self._warn(f"connecting autosave for {name} failed", exc)
 
     def _ensure_timer(self, widget: QtWidgets.QWidget) -> QtCore.QTimer:
         """Return a per-window single-shot timer used to debounce settings writes."""

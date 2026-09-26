@@ -658,18 +658,7 @@ class LogLine:
 
 
 def preset_sizes(preset: str) -> list[int]:
-    preset = (preset or "").strip()
-    try:
-        normalized = preset.replace("–", "-").replace("â€“", "-")
-        max_size = int(normalized.split("-", 1)[1])
-    except Exception:
-        max_size = 256
-
-    ladder = [16, 24, 32, 48, 64, 96, 128, 256, 512, 1024]
-    out = [s for s in ladder if s <= max_size]
-    if 16 not in out:
-        out.insert(0, 16)
-    return out
+    return eng.quality_preset_sizes(preset)
 
 
 def choose_archive_storage_root(parent) -> Path | None:
@@ -886,10 +875,6 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.cmb_padding.findText(pad) >= 0:
             self.cmb_padding.setCurrentText(pad)
 
-        qual = self._settings.value("last_quality", "16-1024", str)
-        if self.cmb_quality.findText(qual) >= 0:
-            self.cmb_quality.setCurrentText(qual)
-
         try:
             self.state.apply_truthful_source_ui(self)
         except Exception:
@@ -971,7 +956,7 @@ class MainWindow(QtWidgets.QMainWindow):
         main_outer.addWidget(body, 1)
 
         self.main_area = QtWidgets.QWidget()
-        self.main_area.setMinimumWidth(720)
+        self.main_area.setMinimumWidth(580)
         left = QtWidgets.QVBoxLayout(self.main_area)
         left.setContentsMargins(0, 0, 0, 0)
         left.setSpacing(10)
@@ -981,7 +966,7 @@ class MainWindow(QtWidgets.QMainWindow):
         body_layout.addWidget(self.archive_sidebar)
         self.archive_sidebar.filesDropped.connect(self._import_paths_to_archive_storage)
 
-        source = CardFrame('')
+        source = CardFrame('Source')
         self.source_card = source
         left.addWidget(source)
         sg = QtWidgets.QGridLayout()
@@ -1017,21 +1002,11 @@ class MainWindow(QtWidgets.QMainWindow):
             btn.setFixedHeight(32)
             self.quick_action_row.addWidget(btn)
         self.quick_action_row.addStretch(1)
-        left.addLayout(self.quick_action_row)
+        source.body_layout().addLayout(self.quick_action_row)
 
-        sage_card = CardFrame('')
-        sage_card.setProperty("sageCard", True)
-        left.addWidget(sage_card)
-        sage_layout = QtWidgets.QVBoxLayout()
-        sage_layout.setContentsMargins(0, 0, 0, 0)
-        sage_layout.setSpacing(10)
-        sage_card.body_layout().addLayout(sage_layout)
-
-        self.btn_sage = NeonRippleIconButton()
-        self.btn_sage.setToolTip(SAGE_TOOLTIP)
-        self.btn_sage.set_icon_from_png(SAGE_BUTTON_IMAGE_PATH)
-        sage_layout.addWidget(self.btn_sage, 0, QtCore.Qt.AlignCenter)
-        self.btn_sage.clicked.connect(self._open_sage_url)
+        run_card = CardFrame('Conversion')
+        left.addWidget(run_card)
+        run_layout = run_card.body_layout()
 
         btn_row = QtWidgets.QHBoxLayout()
         btn_row.setSpacing(8)
@@ -1043,15 +1018,33 @@ class MainWindow(QtWidgets.QMainWindow):
         btn_row.addWidget(self.btn_run)
         btn_row.addWidget(self.btn_cancel)
         btn_row.addStretch(1)
-        sage_layout.addLayout(btn_row)
+        run_layout.addLayout(btn_row)
 
         self.bar = QtWidgets.QProgressBar()
         self.bar.setRange(0, 100)
         self.bar.setValue(0)
         self.status_line = QtWidgets.QLabel('Ready.')
         self.status_line.setObjectName('StatusLine')
-        sage_layout.addWidget(self.bar)
-        sage_layout.addWidget(self.status_line)
+        run_layout.addWidget(self.bar)
+        run_layout.addWidget(self.status_line)
+
+        sage_card = CardFrame('Sage')
+        sage_card.setProperty("sageCard", True)
+        left.addWidget(sage_card)
+        sage_layout = QtWidgets.QHBoxLayout()
+        sage_layout.setContentsMargins(0, 0, 0, 0)
+        sage_layout.setSpacing(16)
+        sage_card.body_layout().addLayout(sage_layout)
+
+        self.btn_sage = NeonRippleIconButton()
+        self.btn_sage.setToolTip(SAGE_TOOLTIP)
+        self.btn_sage.set_icon_from_png(SAGE_BUTTON_IMAGE_PATH)
+        sage_layout.addWidget(self.btn_sage, 0, QtCore.Qt.AlignVCenter)
+        self.btn_sage.clicked.connect(self._open_sage_url)
+        sage_hint = QtWidgets.QLabel('Open Sage for help creating icons.')
+        sage_hint.setObjectName('SageHint')
+        sage_hint.setWordWrap(True)
+        sage_layout.addWidget(sage_hint, 1, QtCore.Qt.AlignVCenter)
         left.addStretch(1)
 
         self.page_settings = QtWidgets.QWidget()
@@ -1096,6 +1089,8 @@ class MainWindow(QtWidgets.QMainWindow):
         for b in (self.btn_settings_archive_storage, self.btn_settings_image):
             b.setObjectName("SettingsNavButton")
             b.setCursor(QtCore.Qt.PointingHandCursor)
+            b.setCheckable(True)
+            b.setAutoExclusive(True)
             b.setMinimumHeight(38)
             b.setMinimumWidth(136)
             nav_layout.addWidget(b)
@@ -1109,6 +1104,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.settings_stack = QtWidgets.QStackedWidget()
         upper_layout.addWidget(self.settings_stack,1)
+        self.settings_stack.currentChanged.connect(self._sync_settings_navigation)
 
         archive_page = QtWidgets.QWidget()
         archive_layout = QtWidgets.QVBoxLayout(archive_page)
@@ -1123,19 +1119,23 @@ class MainWindow(QtWidgets.QMainWindow):
         archive_grid = QtWidgets.QGridLayout()
         archive_grid.setHorizontalSpacing(10)
         archive_grid.setVerticalSpacing(10)
+        archive_grid.setColumnStretch(1, 1)
         archive_card.body_layout().addLayout(archive_grid)
 
         self.lbl_archive_storage_root = QtWidgets.QLabel(str(self.paths.storage_root))
         self.lbl_archive_storage_root.setObjectName("FixedOutPath")
         self.lbl_archive_storage_root.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        self.lbl_archive_storage_root.setWordWrap(True)
 
         self.lbl_source_images_dir = QtWidgets.QLabel(str(self.paths.images_dir))
         self.lbl_source_images_dir.setObjectName("FixedOutPath")
         self.lbl_source_images_dir.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        self.lbl_source_images_dir.setWordWrap(True)
 
         self.lbl_generated_icons_dir = QtWidgets.QLabel(str(self.paths.icons_dir))
         self.lbl_generated_icons_dir.setObjectName("FixedOutPath")
         self.lbl_generated_icons_dir.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        self.lbl_generated_icons_dir.setWordWrap(True)
 
         self.btn_open_archive_storage_root = QtWidgets.QPushButton("Open Archive Storage Root")
         self.btn_open_archive_storage_root.setCursor(QtCore.Qt.PointingHandCursor)
@@ -1178,21 +1178,36 @@ class MainWindow(QtWidgets.QMainWindow):
         g.setVerticalSpacing(10)
         opt.body_layout().addLayout(g)
 
-        self.cmb_quality = QtWidgets.QComboBox()
-        self.cmb_quality.setCursor(QtCore.Qt.PointingHandCursor)
-        presets = ["16-1024", "16-512", "16-256", "16-128", "16-64", "16-48", "16-32", "16-24", "16-16"]
-        self.cmb_quality.addItems(presets)
-        self.cmb_quality.setCurrentText("16-1024")
+        self.cmb_quality_min = QtWidgets.QComboBox()
+        self.cmb_quality_max = QtWidgets.QComboBox()
+        for combo in (self.cmb_quality_min, self.cmb_quality_max):
+            combo.setCursor(QtCore.Qt.PointingHandCursor)
+            combo.addItems([str(size) for size in eng.QUALITY_SIZES])
+        self.set_quality_preset("16-256")
+        self.cmb_quality_min.currentIndexChanged.connect(self._quality_min_changed)
+        self.cmb_quality_max.currentIndexChanged.connect(self._quality_max_changed)
         self.chk_overwrite = QtWidgets.QCheckBox("Overwrite Mode")
         self.chk_overwrite.setChecked(True)
         self.cmb_padding = QtWidgets.QComboBox()
         self.cmb_padding.addItems(list(eng.PADDING_PRESETS.keys()))
         self.cmb_padding.setCurrentText("balanced")
-        g.addWidget(QtWidgets.QLabel("Quality Preset"), 0, 0)
-        g.addWidget(self.cmb_quality, 0, 1)
-        g.addWidget(QtWidgets.QLabel("Padding"), 1, 0)
-        g.addWidget(self.cmb_padding, 1, 1)
-        g.addWidget(self.chk_overwrite, 2, 0, 1, 2)
+        quality_label = QtWidgets.QLabel("Quality Preset")
+        quality_label.setToolTip("Choose the smallest and largest sizes stored in each generated icon.")
+        g.addWidget(quality_label, 0, 0)
+        quality_controls = QtWidgets.QHBoxLayout()
+        quality_controls.setSpacing(8)
+        quality_controls.addWidget(QtWidgets.QLabel("Min"))
+        quality_controls.addWidget(self.cmb_quality_min)
+        quality_controls.addWidget(QtWidgets.QLabel("Max"))
+        quality_controls.addWidget(self.cmb_quality_max)
+        g.addLayout(quality_controls, 0, 1)
+        quality_hint = QtWidgets.QLabel("Icon frame sizes, 8–256 px. Includes each standard size in the selected range.")
+        quality_hint.setObjectName("SettingHint")
+        quality_hint.setWordWrap(True)
+        g.addWidget(quality_hint, 1, 1)
+        g.addWidget(QtWidgets.QLabel("Padding"), 2, 0)
+        g.addWidget(self.cmb_padding, 2, 1)
+        g.addWidget(self.chk_overwrite, 3, 0, 1, 2)
 
         img_layout.addStretch(1)
 
@@ -1200,6 +1215,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_settings_image.clicked.connect(lambda: self.settings_stack.setCurrentIndex(1))
         self.btn_settings_exit.clicked.connect(self._exit_iconmaker)
         self.settings_stack.setCurrentIndex(0)
+        self._sync_settings_navigation(0)
         self.view_stack.setCurrentWidget(self.page_main)
         self._sync_view_chrome()
 
@@ -1320,6 +1336,10 @@ class MainWindow(QtWidgets.QMainWindow):
             color: rgba(234,242,255,220);
             font-weight: 700;
         }
+        #SageHint, #SettingHint {
+            color: rgba(234,242,255,175);
+            font-size: 11px;
+        }
         QLabel#VersionWatermark {
             padding: 0 2px;
             background: transparent;
@@ -1344,6 +1364,16 @@ class MainWindow(QtWidgets.QMainWindow):
             padding: 9px 11px;
             background-color: rgba(7, 10, 18, 0.62);
             color: rgba(234,242,255,230);
+        }
+        QLineEdit:focus, QComboBox:focus {
+            border: 1px solid rgba(0,220,255,0.65);
+            background-color: rgba(10, 17, 34, 0.88);
+        }
+        QComboBox QAbstractItemView {
+            background-color: #10182d;
+            color: #eaf2ff;
+            selection-background-color: #21465c;
+            selection-color: #ffffff;
         }
 
         QListWidget::item {
@@ -1373,9 +1403,9 @@ class MainWindow(QtWidgets.QMainWindow):
         QPushButton:pressed { background-color: rgba(0,220,255,0.10); }
 
         QPushButton:disabled {
-            background-color: #2a2a2a;
-            color: #666666;
-            border: 1px solid #333333;
+            background-color: rgba(255,255,255,0.035);
+            color: rgba(234,242,255,105);
+            border: 1px solid rgba(255,255,255,0.06);
         }
         QPushButton#QuickActionButton {
             padding: 6px 12px;
@@ -1406,6 +1436,12 @@ class MainWindow(QtWidgets.QMainWindow):
         QPushButton#SettingsNavButton {
             font-size: 10px;
             padding: 8px 10px;
+            text-align: left;
+        }
+        QPushButton#SettingsNavButton:checked {
+            color: #ffffff;
+            background-color: rgba(0,220,255,0.16);
+            border: 1px solid rgba(0,220,255,0.42);
         }
 
         #NeonCTA {
@@ -1592,6 +1628,29 @@ class MainWindow(QtWidgets.QMainWindow):
         self.title_bar.set_nav_text("Back" if in_settings else "Settings")
         self.title_bar.sync_state()
         self._update_window_shape()
+
+    def _sync_settings_navigation(self, index: int) -> None:
+        self.btn_settings_archive_storage.setChecked(index == 0)
+        self.btn_settings_image.setChecked(index == 1)
+
+    def set_quality_preset(self, preset: str) -> None:
+        minimum, maximum = eng.quality_range(preset)
+        min_blocker = QtCore.QSignalBlocker(self.cmb_quality_min)
+        max_blocker = QtCore.QSignalBlocker(self.cmb_quality_max)
+        self.cmb_quality_min.setCurrentText(str(minimum))
+        self.cmb_quality_max.setCurrentText(str(maximum))
+        del min_blocker, max_blocker
+
+    def quality_preset(self) -> str:
+        return f"{self.cmb_quality_min.currentText()}-{self.cmb_quality_max.currentText()}"
+
+    def _quality_min_changed(self, _index: int) -> None:
+        if int(self.cmb_quality_min.currentText()) > int(self.cmb_quality_max.currentText()):
+            self.cmb_quality_max.setCurrentText(self.cmb_quality_min.currentText())
+
+    def _quality_max_changed(self, _index: int) -> None:
+        if int(self.cmb_quality_max.currentText()) < int(self.cmb_quality_min.currentText()):
+            self.cmb_quality_min.setCurrentText(self.cmb_quality_max.currentText())
 
     def _update_window_shape(self) -> None:
         if self._use_native_window_controls or self.isMaximized():
@@ -2002,7 +2061,7 @@ class MainWindow(QtWidgets.QMainWindow):
             report = GenOps.run_archive_maintenance(
                 paths=self.paths,
                 overwrite=self.chk_overwrite.isChecked(),
-                sizes=preset_sizes(self.cmb_quality.currentText()),
+                sizes=preset_sizes(self.quality_preset()),
                 padding_mode=self.cmb_padding.currentText(),
                 autocrop=False,
                 logfn=lambda s: self._log(s),
@@ -2133,7 +2192,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.mode_seg.setEnabled(enabled)
         self.chk_recursive.setEnabled(enabled)
         self.chk_overwrite.setEnabled(enabled)
-        self.cmb_quality.setEnabled(enabled)
+        self.cmb_quality_min.setEnabled(enabled)
+        self.cmb_quality_max.setEnabled(enabled)
         self.cmb_padding.setEnabled(enabled)
         self.btn_cancel.setEnabled(not enabled)
 
@@ -2157,9 +2217,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.status_line.setText("Starting...")
         self._set_run_ui_enabled(False)
 
-        sizes = [s for s in preset_sizes(self.cmb_quality.currentText()) if 1 <= s <= 1024]
-        if not sizes:
-            sizes = [16, 24, 32, 48, 64, 128, 256, 512, 1024]
+        sizes = preset_sizes(self.quality_preset())
 
         padding_mode = self.cmb_padding.currentText()
         recursive = self.chk_recursive.isChecked()

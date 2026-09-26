@@ -61,6 +61,7 @@ class EnginePaths:
 __all__ = [
     "IMAGE_EXTS",
     "DEFAULT_SIZES",
+    "QUALITY_SIZES",
     "AUTO_FULL_SIZES",
     "DEFAULT_ARCHIVE_STORAGE_ROOT",
     "DEFAULT_OUTPUT_DIR",
@@ -76,6 +77,8 @@ __all__ = [
     "ImageDiscoveryReport",
     "diagnose_image_discovery",
     "parse_sizes",
+    "quality_range",
+    "quality_preset_sizes",
     "find_images",
     "make_ico",
     "unique_path",
@@ -93,6 +96,7 @@ __all__ = [
 IMAGE_EXTS: set[str] = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".tif", ".svg"}
 
 DEFAULT_SIZES: List[int] = [16, 24, 32, 48, 64, 128, 256]
+QUALITY_SIZES = (8, 16, 24, 32, 48, 64, 96, 128, 256)
 ICO_MAX_SIZE = 256
 AUTO_FULL_SIZES: List[int] = list(range(8, 1025, 8))
 DEFAULT_ARCHIVE_STORAGE_ROOT = Path.home() / "Desktop"
@@ -346,11 +350,27 @@ def _normalize_sizes(sizes: Sequence[int]) -> List[int]:
     return sorted(set(out))
 
 
+def quality_range(preset: str) -> tuple[int, int]:
+    """Read a saved icon-size range, including legacy maxima above ICO limits."""
+    try:
+        minimum, maximum = (int(part) for part in preset.replace("–", "-").split("-", 1))
+    except (AttributeError, ValueError):
+        return 16, ICO_MAX_SIZE
+
+    minimum = minimum if minimum in QUALITY_SIZES else 16
+    maximum = min(maximum, ICO_MAX_SIZE)
+    maximum = maximum if maximum in QUALITY_SIZES else ICO_MAX_SIZE
+    return min(minimum, maximum), maximum
+
+
+def quality_preset_sizes(preset: str) -> List[int]:
+    minimum, maximum = quality_range(preset)
+    return [size for size in QUALITY_SIZES if minimum <= size <= maximum]
+
+
 def _normalize_ico_sizes(sizes: Sequence[int] | None) -> List[int]:
-    requested = _normalize_sizes(sizes or DEFAULT_SIZES)
-    supported = {n for n in requested if n <= ICO_MAX_SIZE}
-    supported.update(DEFAULT_SIZES)
-    return sorted(supported)
+    requested = _normalize_sizes(DEFAULT_SIZES if sizes is None else sizes)
+    return [size for size in requested if size <= ICO_MAX_SIZE]
 
 
 def diagnose_image_discovery(input_path: Path, recursive: bool) -> ImageDiscoveryReport:
