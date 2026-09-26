@@ -235,17 +235,17 @@ class CustomTitleBar(QtWidgets.QFrame):
         self.setObjectName("AppTitleBar")
         self._native_window_controls = native_window_controls
         self.setProperty("nativeChrome", native_window_controls)
-        self.setFixedHeight(60 if native_window_controls else 60)
+        self.setFixedHeight(72)
         self._drag_offset: QtCore.QPoint | None = None
 
         layout = QtWidgets.QHBoxLayout(self)
-        layout.setContentsMargins(12, 0, 8, 0)
-        layout.setSpacing(10)
+        layout.setContentsMargins(14, 0, 10, 0)
+        layout.setSpacing(12)
 
         self.brand_label = QtWidgets.QLabel()
         self.brand_label.setObjectName("TitleBarBrand")
         self.brand_label.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
-        self.brand_label.setFixedSize(220 if native_window_controls else 220, 52)
+        self.brand_label.setFixedSize(264, 62)
         self.brand_label.setAlignment(QtCore.Qt.AlignCenter)
         brand_pixmap = QtGui.QPixmap(str(APP_BRANDING_IMAGE_PATH))
         if not brand_pixmap.isNull():
@@ -265,14 +265,14 @@ class CustomTitleBar(QtWidgets.QFrame):
         self.btn_nav.setCursor(QtCore.Qt.PointingHandCursor)
         self.btn_nav.setToolTip("Settings")
         self.btn_nav.setAccessibleName("Settings")
-        self.btn_nav.setFixedHeight(30 if native_window_controls else 32)
+        self.btn_nav.setFixedHeight(36 if native_window_controls else 38)
         layout.addWidget(self.btn_nav, 0, QtCore.Qt.AlignVCenter)
 
         self.btn_min: QtWidgets.QToolButton | None = None
         self.btn_max: QtWidgets.QToolButton | None = None
         self.btn_close: QtWidgets.QToolButton | None = None
         if not native_window_controls:
-            layout.addSpacing(6)
+            layout.addSpacing(12)
             self.btn_min = QtWidgets.QToolButton()
             self.btn_min.setObjectName("WindowControl")
             self.btn_min.setText("—")
@@ -292,7 +292,7 @@ class CustomTitleBar(QtWidgets.QFrame):
             for btn in (self.btn_min, self.btn_max, self.btn_close):
                 btn.setCursor(QtCore.Qt.PointingHandCursor)
                 btn.setAutoRaise(True)
-                btn.setFixedSize(36, 32)
+                btn.setFixedSize(43, 38)
                 layout.addWidget(btn, 0, QtCore.Qt.AlignVCenter)
 
         self.sync_state()
@@ -1258,11 +1258,11 @@ class MainWindow(QtWidgets.QMainWindow):
         }
         QPushButton#TitleBarNavButton {
             border-radius: 10px;
-            padding: 3px 12px;
+            padding: 3px 14px;
             background-color: rgba(255,255,255,0.05);
             border: 1px solid rgba(255,255,255,0.09);
             color: rgba(234,242,255,230);
-            font-size: 16px;
+            font-size: 19px;
             font-weight: 800;
         }
         QPushButton#TitleBarNavButton:hover {
@@ -1274,7 +1274,7 @@ class MainWindow(QtWidgets.QMainWindow):
             border: 1px solid rgba(255,255,255,0.08);
             background: rgba(255,255,255,0.05);
             color: rgba(234,242,255,235);
-            font-size: 12px;
+            font-size: 14px;
             font-weight: 900;
         }
         QToolButton#WindowControl:hover {
