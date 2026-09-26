@@ -1629,7 +1629,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _sync_view_chrome(self) -> None:
         in_settings = self.view_stack.currentWidget() is self.page_settings
-        self.title_bar.set_nav_text("Back" if in_settings else "⚙")
+        self.title_bar.set_nav_text("←" if in_settings else "⚙")
         self.title_bar.btn_nav.setToolTip("Back" if in_settings else "Settings")
         self.title_bar.btn_nav.setAccessibleName("Back" if in_settings else "Settings")
         self.title_bar.sync_state()
