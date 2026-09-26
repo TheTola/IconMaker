@@ -48,7 +48,7 @@ ASSETS_DIR = APP_DIR / "assets"
 
 # These assets define the branded title artwork and the prominent Sage shortcut.
 SAGE_BUTTON_IMAGE_PATH = ASSETS_DIR / "IcoSage.png"
-APP_BRANDING_IMAGE_PATH = ASSETS_DIR / "Iconner.png"
+APP_BRANDING_IMAGE_PATH = ASSETS_DIR / "iconner.png"
 
 # The Sage button stays intentionally prominent because it is a primary shortcut.
 HERO_ICON_SIZE = 200
@@ -1599,6 +1599,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _exit_iconmaker(self) -> None:
         """Exit the UI and tray together through the shared app-event channel."""
+        self.state.flush_pending_save(self)
         GenOps.publish_app_event("quit-all", "settings-exit")
         app = QtWidgets.QApplication.instance()
         if app is not None:
@@ -1608,8 +1609,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _set_launch_tray_at_startup(self, enabled: bool) -> None:
         """Persist and apply the user's tray-at-startup preference."""
-        GenOps.save_launch_tray_at_startup(enabled, self._settings)
         if GenOps.apply_launch_tray_at_startup(enabled, self._settings):
+            GenOps.save_launch_tray_at_startup(enabled, self._settings)
             state = "enabled" if enabled else "disabled"
             self._log(f"Tray startup {state}.")
             return
@@ -1846,6 +1847,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._log_pending.clear()
 
     def _import_paths_to_archive_storage(self, paths: list) -> None:
+        if self._run_in_progress:
+            self._log("Archive import is unavailable during conversion.", "WARN")
+            return
         if not paths:
             return
 
@@ -2000,8 +2004,15 @@ class MainWindow(QtWidgets.QMainWindow):
         new_stem = str(new_stem or "").strip()
         if not new_stem:
             return
+        if "/" in new_stem or "\\" in new_stem:
+            QtWidgets.QMessageBox.warning(self, "Rename Image", "Enter a name without path separators.")
+            return
 
-        desired = p.with_name(f"{new_stem}{p.suffix.lower()}")
+        try:
+            desired = p.with_name(f"{new_stem}{p.suffix.lower()}")
+        except ValueError as exc:
+            QtWidgets.QMessageBox.warning(self, "Rename Image", str(exc))
+            return
         if desired == p:
             return
 
@@ -2019,9 +2030,10 @@ class MainWindow(QtWidgets.QMainWindow):
             self.archive_sidebar.rename_item_path(p, desired)
             self._log(f"Renamed image: {p.name} -> {desired.name}")
             self._set_input(str(desired))
-            self._refresh_archive_view()
+            self._run_archive_maintenance_now("archive-rename")
         except Exception as e:
             self._log(f"ERR: Rename failed: {p} ({e})", "ERR")
+            QtWidgets.QMessageBox.warning(self, "Rename Image", f"Could not rename image:\n{e}")
 
     def _delete_archive_image(self, path: Path) -> None:
         p = Path(path)
@@ -2055,6 +2067,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._set_input(p)
 
     def _run_archive_maintenance_now(self, reason: str) -> None:
+        if self._run_in_progress:
+            return
         self._log(f"=== MAINTENANCE ({reason}) ===")
         self.status_line.setText(f"Updating archive... ({reason})")
         try:
@@ -2099,6 +2113,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self._refresh_archive_view()
 
     def _change_archive_storage_location(self) -> None:
+        if self._run_in_progress:
+            return
         start_dir = str(getattr(self, "archive_storage_root", Path.home()))
         picked = QtWidgets.QFileDialog.getExistingDirectory(
             self,
@@ -2169,15 +2185,15 @@ class MainWindow(QtWidgets.QMainWindow):
         if QtWidgets.QMessageBox.question(
             self,
             "IconMaker",
-            f"Relocation verified. Delete old archive storage?\n\n{old_root}",
+            f"Relocation verified. Delete the old managed Icon Images folder?\n\n{old_images_dir}",
             QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
             QtWidgets.QMessageBox.No,
         ) == QtWidgets.QMessageBox.Yes:
             try:
-                shutil.rmtree(old_root)
-                self._log(f"Old archive storage deleted: {old_root}")
+                shutil.rmtree(old_images_dir)
+                self._log(f"Old managed archive deleted: {old_images_dir}")
             except Exception as e:
-                self._log(f"WARN: Could not delete old archive storage ({e})", "WARN")
+                self._log(f"WARN: Could not delete old managed archive ({e})", "WARN")
 
     def _cancel(self) -> None:
         self._cancel_requested = True
@@ -2195,6 +2211,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.cmb_quality_min.setEnabled(enabled)
         self.cmb_quality_max.setEnabled(enabled)
         self.cmb_padding.setEnabled(enabled)
+        self.archive_sidebar.setEnabled(enabled)
+        self.btn_change_archive_storage.setEnabled(enabled)
+        self.btn_settings_exit.setEnabled(enabled)
         self.btn_cancel.setEnabled(not enabled)
 
     def _run_convert(self) -> None:
@@ -2325,6 +2344,12 @@ class MainWindow(QtWidgets.QMainWindow):
         super().resizeEvent(event)
 
     def closeEvent(self, event) -> None:
+        if self._run_in_progress:
+            self._cancel()
+            event.ignore()
+            return
+        if hasattr(self, "state"):
+            self.state.flush_pending_save(self)
         try:
             self._events_timer.stop()
         except Exception:

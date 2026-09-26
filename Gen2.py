@@ -264,6 +264,34 @@ def _canonical_relative_file_key(p: Path, base: Path) -> str:
     return "/".join([*folder_parts, stem_key])
 
 
+def _icon_names_for_images(images: Sequence[Path]) -> Dict[Path, str]:
+    """Keep unique stems unchanged and disambiguate competing source images."""
+    groups: Dict[Tuple[Path, str], List[Path]] = {}
+    for image in images:
+        groups.setdefault((image.parent, sanitize_piece(image.stem)), []).append(image)
+
+    used_by_dir: Dict[Path, set[str]] = {}
+    for parent, stem in groups:
+        used_by_dir.setdefault(parent, set()).add(stem)
+
+    names: Dict[Path, str] = {}
+    for (parent, stem), members in sorted(groups.items(), key=lambda item: (str(item[0][0]).casefold(), item[0][1])):
+        if len(members) == 1:
+            names[members[0]] = stem
+            continue
+        used = used_by_dir[parent]
+        for image in sorted(members, key=lambda path: (path.suffix.casefold(), path.name.casefold(), path.name)):
+            base = f"{stem}~{sanitize_piece(image.suffix.lstrip('.'))}"
+            candidate = base
+            number = 2
+            while candidate in used:
+                candidate = f"{base}~{number}"
+                number += 1
+            names[image] = candidate
+            used.add(candidate)
+    return names
+
+
 def _icon_target_for_image(
     img: Path,
     *,
@@ -271,6 +299,7 @@ def _icon_target_for_image(
     images_dir: Path | None = None,
     icons_dir: Path | None = None,
     suffix: str = "",
+    icon_names: Dict[Path, str] | None = None,
 ) -> Path:
     if paths is not None:
         base = paths.images_dir
@@ -280,7 +309,15 @@ def _icon_target_for_image(
         icons = Path(icons_dir) if icons_dir is not None else Path(ICONS_DIR)
 
     rel_parent = img.relative_to(base).parent
-    out_name = f"{sanitize_piece(img.stem)}{suffix}.ico"
+    if icon_names is None:
+        try:
+            siblings = [path for path in img.parent.iterdir() if _is_image_file(path)]
+        except OSError:
+            siblings = []
+        if img not in siblings:
+            siblings.append(img)
+        icon_names = _icon_names_for_images(siblings)
+    out_name = f"{icon_names.get(img, sanitize_piece(img.stem))}{suffix}.ico"
     target_dir = icons / rel_parent
     return target_dir / out_name
 
@@ -490,15 +527,40 @@ def unique_path(p: Path) -> Path:
 def _load_svg_to_rgba(svg_path: Path) -> Image.Image:
     try:
         import cairosvg
-    except Exception as e:
-        raise RuntimeError(f"CairoSVG not installed for SVG support: {e}")
-
-    try:
         png_bytes = cairosvg.svg2png(url=str(svg_path))
         im = Image.open(BytesIO(png_bytes))
         return im.convert("RGBA")
-    except Exception as e:
-        raise RuntimeError(f"SVG render failed: {e}")
+    except Exception as cairo_error:
+        try:
+            from PySide6 import QtCore, QtGui, QtSvg
+
+            renderer = QtSvg.QSvgRenderer(str(svg_path))
+            if not renderer.isValid():
+                raise ValueError("Invalid SVG")
+            size = renderer.defaultSize()
+            width, height = size.width(), size.height()
+            if width <= 0 or height <= 0:
+                view_box = renderer.viewBoxF()
+                width, height = view_box.width(), view_box.height()
+            if width <= 0 or height <= 0:
+                width = height = 256
+            scale = 256 / max(width, height)
+            width = max(1, round(width * scale))
+            height = max(1, round(height * scale))
+
+            image = QtGui.QImage(width, height, QtGui.QImage.Format.Format_ARGB32)
+            image.fill(QtCore.Qt.GlobalColor.transparent)
+            painter = QtGui.QPainter(image)
+            try:
+                renderer.render(painter)
+            finally:
+                painter.end()
+            buffer = QtCore.QBuffer()
+            if not buffer.open(QtCore.QIODevice.OpenModeFlag.WriteOnly) or not image.save(buffer, "PNG"):
+                raise RuntimeError("Could not encode rendered SVG")
+            return Image.open(BytesIO(bytes(buffer.data()))).convert("RGBA")
+        except Exception as qt_error:
+            raise RuntimeError(f"SVG render failed (CairoSVG: {cairo_error}; QtSvg: {qt_error})") from qt_error
 
 
 def _load_image_any(path: Path) -> Image.Image:
@@ -810,13 +872,16 @@ def list_missing_icon_tasks(
     except Exception:
         return []
 
-    for img in _iter_archive_source_images(paths=paths, recursive=True):
+    images = _iter_archive_source_images(paths=paths, recursive=True)
+    icon_names = _icon_names_for_images(images)
+    for img in images:
         target = _icon_target_for_image(
             img,
             paths=paths,
             images_dir=images_dir,
             icons_dir=icons_dir,
             suffix=suffix,
+            icon_names=icon_names,
         )
 
         if not target.exists():
@@ -898,11 +963,12 @@ def _scan_counts_only(
 
     images = _iter_archive_source_images(paths=paths, recursive=True)
     scanned = len(images)
+    icon_names = _icon_names_for_images(images)
 
     if overwrite:
         tasks: List[Tuple[Path, Path]] = []
         for img in images:
-            out = _icon_target_for_image(img, paths=paths, suffix=suffix)
+            out = _icon_target_for_image(img, paths=paths, suffix=suffix, icon_names=icon_names)
             tasks.append((img, out))
     else:
         tasks = list_missing_icon_tasks(
@@ -958,10 +1024,20 @@ def remove_orphan_icons(
     except Exception:
         return 0
 
-    source_keys: set[str] = set()
-    for img in _iter_archive_source_images(paths=paths, recursive=True):
+    images = _iter_archive_source_images(paths=paths, recursive=True)
+    icon_names = _icon_names_for_images(images)
+    expected_icon_keys: set[str] = set()
+    for img in images:
         try:
-            source_keys.add(_canonical_relative_file_key(img, images_dir))
+            target = _icon_target_for_image(
+                img,
+                paths=paths,
+                images_dir=images_dir,
+                icons_dir=icons_dir,
+                suffix=suffix,
+                icon_names=icon_names,
+            )
+            expected_icon_keys.add(_canonical_relative_file_key(target, icons_dir))
         except Exception:
             pass
 
@@ -979,18 +1055,10 @@ def remove_orphan_icons(
                 continue
 
             rel = ico.relative_to(icons_dir)
-            folder_parts = [canonical_key(part) for part in rel.parts[:-1]]
-            stem = ico.stem
+            if suffix and not ico.stem.endswith(suffix):
+                continue
 
-            if suffix:
-                if not stem.endswith(suffix):
-                    continue
-                base_stem = stem[: -len(suffix)]
-            else:
-                base_stem = stem
-
-            ico_key = "/".join([*folder_parts, canonical_key(base_stem)])
-            if ico_key in source_keys:
+            if _canonical_relative_file_key(ico, icons_dir) in expected_icon_keys:
                 continue
 
             if action == "quarantine":
@@ -1201,10 +1269,10 @@ def _cli() -> int:
     total = len(imgs)
     import_root = inp if inp.is_dir() else None
 
-    for idx, img in enumerate(imgs, start=1):
-        src = Path(img)
-
-        if args.mirror:
+    conversion_jobs: List[Tuple[int, Path]] = []
+    if args.mirror:
+        for idx, img in enumerate(imgs, start=1):
+            src = Path(img)
             emit_progress(idx - 1, total, f"Importing {idx}/{total}: {src.name}", file=str(src))
             try:
                 mirrored = mirror_copy_to_archive_sources(src, paths=paths, source_root=import_root, logfn=log)
@@ -1218,13 +1286,24 @@ def _cli() -> int:
                 log(f"SKIP: Import skipped: {src}")
                 continue
 
-            src = Path(mirrored)
+            conversion_jobs.append((idx, Path(mirrored)))
+    else:
+        conversion_jobs = [(idx, Path(img)) for idx, img in enumerate(imgs, start=1)]
 
+    for idx, src in conversion_jobs:
         emit_progress(idx, total, f"Converting {idx}/{total}: {src.name}", file=str(src))
 
+        output_target = out
+        if args.mirror and out.suffix.lower() != ".ico":
+            output_target = _icon_target_for_image(
+                src,
+                images_dir=paths.images_dir,
+                icons_dir=out,
+                suffix=args.suffix,
+            )
         res_ok, msg = make_ico(
             src,
-            out,
+            output_target,
             sizes=sizes,
             suffix=args.suffix,
             overwrite=not args.no_overwrite,

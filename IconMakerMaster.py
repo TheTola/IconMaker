@@ -371,18 +371,24 @@ def tray_command() -> list[str]:
 
 def run_ui() -> None:
     """Boot the main application window."""
-    _prepare_runtime()
-    from Gen1 import main as gen1_main
+    def launch() -> None:
+        _prepare_runtime()
+        from Gen1 import main as gen1_main
 
-    run_with_crash_logging(gen1_main, mode="ui", show_ui_error=True)
+        gen1_main()
+
+    run_with_crash_logging(launch, mode="ui", show_ui_error=True)
 
 
 def run_tray() -> None:
     """Boot the unattended tray/watch worker."""
-    _prepare_runtime()
-    from Gen3 import main as gen3_main
+    def launch() -> None:
+        _prepare_runtime()
+        from Gen3 import main as gen3_main
 
-    run_with_crash_logging(gen3_main, mode="tray", show_ui_error=False)
+        gen3_main()
+
+    run_with_crash_logging(launch, mode="tray", show_ui_error=False)
 
 
 def _show_already_running_ui_message() -> None:

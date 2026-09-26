@@ -103,12 +103,13 @@ def _same_file(a: Path, b: Path) -> bool:
         return False
 
 
-def _file_hash_limited(path: Path, max_bytes: int = 4_000_000):
+def _file_hash(path: Path):
     import hashlib
     try:
         h = hashlib.sha256()
         with path.open("rb") as f:
-            h.update(f.read(max_bytes))
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                h.update(chunk)
         return h.hexdigest()
     except Exception:
         return None
@@ -121,8 +122,8 @@ def _is_identical(a: Path, b: Path) -> bool:
     except Exception:
         return False
 
-    ha = _file_hash_limited(a)
-    hb = _file_hash_limited(b)
+    ha = _file_hash(a)
+    hb = _file_hash(b)
     return ha is not None and ha == hb
 
 # =========================

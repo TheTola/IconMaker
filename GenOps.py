@@ -422,8 +422,12 @@ def plan_archive_storage_relocation(source_root: Path, target_root: Path) -> Arc
     if str(src).startswith(str(dst) + os.sep):
         raise ValueError("Destination cannot be a parent of the current archive storage root.")
 
+    source_images_dir = EnginePaths.from_archive_storage_root(src).images_dir
+    if not source_images_dir.is_dir():
+        raise FileNotFoundError(f"Archive source images folder does not exist: {source_images_dir}")
+
     files: List[Path] = []
-    for dirpath, _dirnames, filenames in os.walk(src):
+    for dirpath, _dirnames, filenames in os.walk(source_images_dir):
         base = Path(dirpath)
         for filename in filenames:
             files.append(base / filename)
@@ -443,11 +447,12 @@ def relocate_archive_storage(
     source_root: Path,
     target_root: Path,
     *,
-    overwrite: bool = True,
+    overwrite: bool = False,
     delete_source: bool = True,
     progress_cb: ProgressCB | None = None,
     is_cancelled: Callable[[], bool] | None = None,
 ) -> ArchiveStorageRelocationResult:
+    """Copy the managed archive tree; ``overwrite`` is retained for callers but never permits replacing destination content."""
     def cancelled() -> bool:
         if not is_cancelled:
             return False
@@ -467,14 +472,26 @@ def relocate_archive_storage(
     total = len(plan.source_files)
     copied = 0
     try:
+        target_paths = EnginePaths.from_archive_storage_root(plan.target_root)
+        if target_paths.images_dir.exists():
+            if not target_paths.images_dir.is_dir() or any(target_paths.images_dir.iterdir()):
+                return ArchiveStorageRelocationResult(
+                    False, False, False, 0, f"Destination archive storage is not empty: {target_paths.images_dir}"
+                )
+
         plan.target_root.mkdir(parents=True, exist_ok=True)
+        target_paths.images_dir.mkdir(parents=True, exist_ok=True)
+        target_paths.icons_dir.mkdir(parents=True, exist_ok=True)
+        source_images_dir = EnginePaths.from_archive_storage_root(plan.source_root).images_dir
+        for dirpath, _dirnames, _filenames in os.walk(source_images_dir):
+            (plan.target_root / Path(dirpath).relative_to(plan.source_root)).mkdir(parents=True, exist_ok=True)
         for src_file in plan.source_files:
             if cancelled():
                 return ArchiveStorageRelocationResult(False, False, False, copied, "Cancelled.")
             rel = src_file.relative_to(plan.source_root)
             dst_file = plan.target_root / rel
             dst_file.parent.mkdir(parents=True, exist_ok=True)
-            if dst_file.exists() and not overwrite:
+            if dst_file.exists():
                 return ArchiveStorageRelocationResult(False, False, False, copied, f"Destination exists: {dst_file}")
             shutil.copy2(src_file, dst_file)
             copied += 1
@@ -492,8 +509,13 @@ def relocate_archive_storage(
             if _sha256(src_file) != _sha256(dst_file):
                 return ArchiveStorageRelocationResult(False, False, False, copied, f"Verification failed: content mismatch for {rel}")
 
+        for dirpath, _dirnames, _filenames in os.walk(source_images_dir):
+            rel = Path(dirpath).relative_to(plan.source_root)
+            if not (plan.target_root / rel).is_dir():
+                return ArchiveStorageRelocationResult(False, False, False, copied, f"Verification failed: missing folder {rel}")
+
         if delete_source:
-            shutil.rmtree(plan.source_root)
+            shutil.rmtree(source_images_dir)
 
         save_archive_storage_root(plan.target_root)
         publish_app_event("archive-storage-relocated", str(plan.target_root))
@@ -542,15 +564,13 @@ def run_conversion(
     failed = 0
     total = len(images)
     import_root = input_path if input_path.is_dir() else None
-
-    for idx, image in enumerate(images, start=1):
-        if cancelled():
-            return ConversionResult(False, converted, skipped, failed, "Stopped by cancel.")
-
-        source_image = Path(image)
-        current_status = f"Converting {idx}/{total}: {source_image.name}"
-        if request.mirror:
-            _safe_progress(progress_cb, idx - 1, total, f"Importing {idx}/{total}: {source_image.name}")
+    conversion_jobs: List[tuple[int, Path]] = []
+    if request.mirror:
+        for idx, image in enumerate(images, start=1):
+            if cancelled():
+                return ConversionResult(False, converted, skipped, failed, "Stopped by cancel.")
+            source_image = Path(image)
+            _safe_progress(progress_cb, idx - 1, total * 2, f"Importing {idx}/{total}: {source_image.name}")
             try:
                 mirrored = eng.mirror_copy_to_archive_sources(
                     source_image,
@@ -571,14 +591,25 @@ def run_conversion(
                 if logfn:
                     logfn(f"SKIP: Import skipped: {source_image}")
                 continue
-            source_image = Path(mirrored)
-            current_status = f"Converting {idx}/{total}: {source_image.name}"
+            conversion_jobs.append((idx, Path(mirrored)))
+    else:
+        conversion_jobs = [(idx, Path(image)) for idx, image in enumerate(images, start=1)]
 
-        _safe_progress(progress_cb, idx, total, current_status)
+    for idx, source_image in conversion_jobs:
+        if cancelled():
+            return ConversionResult(False, converted, skipped, failed, "Stopped by cancel.")
+        current_status = f"Converting {idx}/{total}: {source_image.name}"
+        progress_done = total + idx if request.mirror else idx
+        progress_total = total * 2 if request.mirror else total
+        _safe_progress(progress_cb, progress_done, progress_total, current_status)
         try:
+            output_target = (
+                eng.archive_icon_path_for_source_image(source_image, paths=request.paths)
+                if request.mirror else request.paths.icons_dir
+            )
             ok, message = eng.make_ico(
                 source_image,
-                request.paths.icons_dir,
+                output_target,
                 sizes=request.sizes,
                 overwrite=request.overwrite,
                 keep_alpha=request.keep_alpha,

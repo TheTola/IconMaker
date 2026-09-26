@@ -14,6 +14,8 @@ from typing import Dict, List, Optional
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
+import Gen2 as eng
+
 COLLAPSED_WIDTH = 32
 EXPANDED_WIDTH = 528
 PREVIEW_SIZE = 256
@@ -1047,10 +1049,14 @@ class ArchiveSidebar(QtWidgets.QFrame):
         if self._archive_sources_dir is None or self._archive_icons_dir is None:
             return "Unavailable"
         try:
-            rel_parent = path.resolve().relative_to(self._archive_sources_dir.resolve()).parent
-        except Exception:
-            rel_parent = Path()
-        return str((self._archive_icons_dir / rel_parent / f"{path.stem}.ico").resolve())
+            paths = eng.EnginePaths(
+                self._archive_sources_dir.parent,
+                self._archive_sources_dir,
+                self._archive_icons_dir,
+            )
+            return str(eng.archive_icon_path_for_source_image(path.resolve(), paths=paths).resolve())
+        except ValueError:
+            return "Unavailable"
 
     def keyPressEvent(self, event):
         current = self.current_path()

@@ -326,6 +326,13 @@ class StateMemory:
     def _flush_scheduled_save(self, widget: QtWidgets.QWidget) -> None:
         self.save_from_ui(widget)
 
+    def flush_pending_save(self, widget: QtWidgets.QWidget) -> None:
+        """Persist the final UI state before the window or app exits."""
+        timer = self._timers.get(id(widget))
+        if timer is not None:
+            timer.stop()
+        self.save_from_ui(widget)
+
     @staticmethod
     def _validated_input_for_mode(path_str: str, mode: str) -> str:
         """Only restore saved input paths that still match the active source mode."""
