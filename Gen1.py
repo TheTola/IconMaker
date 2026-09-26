@@ -260,9 +260,11 @@ class CustomTitleBar(QtWidgets.QFrame):
         layout.addWidget(self.brand_label, 0, QtCore.Qt.AlignVCenter)
         layout.addStretch(1)
 
-        self.btn_nav = QtWidgets.QPushButton("Settings")
+        self.btn_nav = QtWidgets.QPushButton("⚙")
         self.btn_nav.setObjectName("TitleBarNavButton")
         self.btn_nav.setCursor(QtCore.Qt.PointingHandCursor)
+        self.btn_nav.setToolTip("Settings")
+        self.btn_nav.setAccessibleName("Settings")
         self.btn_nav.setFixedHeight(30 if native_window_controls else 32)
         layout.addWidget(self.btn_nav, 0, QtCore.Qt.AlignVCenter)
 
@@ -270,6 +272,7 @@ class CustomTitleBar(QtWidgets.QFrame):
         self.btn_max: QtWidgets.QToolButton | None = None
         self.btn_close: QtWidgets.QToolButton | None = None
         if not native_window_controls:
+            layout.addSpacing(6)
             self.btn_min = QtWidgets.QToolButton()
             self.btn_min.setObjectName("WindowControl")
             self.btn_min.setText("—")
@@ -1626,7 +1629,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _sync_view_chrome(self) -> None:
         in_settings = self.view_stack.currentWidget() is self.page_settings
-        self.title_bar.set_nav_text("Back" if in_settings else "Settings")
+        self.title_bar.set_nav_text("Back" if in_settings else "⚙")
+        self.title_bar.btn_nav.setToolTip("Back" if in_settings else "Settings")
+        self.title_bar.btn_nav.setAccessibleName("Back" if in_settings else "Settings")
         self.title_bar.sync_state()
         self._update_window_shape()
 
