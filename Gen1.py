@@ -1258,11 +1258,11 @@ class MainWindow(QtWidgets.QMainWindow):
         }
         QPushButton#TitleBarNavButton {
             border-radius: 10px;
-            padding: 6px 12px;
+            padding: 3px 12px;
             background-color: rgba(255,255,255,0.05);
             border: 1px solid rgba(255,255,255,0.09);
             color: rgba(234,242,255,230);
-            font-size: 11px;
+            font-size: 16px;
             font-weight: 800;
         }
         QPushButton#TitleBarNavButton:hover {
