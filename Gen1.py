@@ -2132,7 +2132,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self,
             "IconMaker",
             (
-                f"Move archive storage from:\n{old_root}\n\nTo:\n{new_root}\n\n"
+                f"Copy archive storage from:\n{old_root}\n\nSwitch to:\n{new_root}\n\n"
                 "Tray and background activity will pause during relocation."
             ),
             QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
@@ -2182,18 +2182,11 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.archive_sidebar.expand()
         self._log(f"Archive storage relocated to: {new_root}")
-        if QtWidgets.QMessageBox.question(
+        QtWidgets.QMessageBox.information(
             self,
             "IconMaker",
-            f"Relocation verified. Delete the old managed Icon Images folder?\n\n{old_images_dir}",
-            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
-            QtWidgets.QMessageBox.No,
-        ) == QtWidgets.QMessageBox.Yes:
-            try:
-                shutil.rmtree(old_images_dir)
-                self._log(f"Old managed archive deleted: {old_images_dir}")
-            except Exception as e:
-                self._log(f"WARN: Could not delete old managed archive ({e})", "WARN")
+            f"Archive storage moved to:\n{new_root}\n\nThe old Icon Images folder remains at:\n{old_images_dir}",
+        )
 
     def _cancel(self) -> None:
         self._cancel_requested = True

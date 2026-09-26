@@ -448,7 +448,7 @@ def relocate_archive_storage(
     target_root: Path,
     *,
     overwrite: bool = False,
-    delete_source: bool = True,
+    delete_source: bool = False,
     progress_cb: ProgressCB | None = None,
     is_cancelled: Callable[[], bool] | None = None,
 ) -> ArchiveStorageRelocationResult:
@@ -513,6 +513,9 @@ def relocate_archive_storage(
             rel = Path(dirpath).relative_to(plan.source_root)
             if not (plan.target_root / rel).is_dir():
                 return ArchiveStorageRelocationResult(False, False, False, copied, f"Verification failed: missing folder {rel}")
+
+        if plan_archive_storage_relocation(plan.source_root, plan.target_root).source_files != plan.source_files:
+            return ArchiveStorageRelocationResult(False, False, False, copied, "Archive changed during relocation; source retained.")
 
         if delete_source:
             shutil.rmtree(source_images_dir)
