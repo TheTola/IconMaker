@@ -35,6 +35,8 @@ LEGACY_LIBRARY_ROOT_KEY = "library_root"
 SAGE_URL_KEY = "sage/url"
 DEFAULT_SAGE_URL = "https://chatgpt.com/g/g-68e8c5f35ff0819195a81c501942a072-sage-of-iconer"
 STARTUP_TRAY_ENABLED_KEY = "startup/launch_tray"
+PROMOTE_IMAGE_COPIES_KEY = "archive/promote_orphaned_copies"
+REMOVE_EXTRA_IMAGE_COPIES_KEY = "archive/remove_extra_copies"
 ARCHIVE_STORAGE_PAUSE_KEY = "app_state/archive_storage_pause"
 ARCHIVE_STORAGE_PAUSE_REASON_KEY = "app_state/archive_storage_pause_reason"
 WINDOWS_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
@@ -174,6 +176,32 @@ def save_launch_tray_at_startup(enabled: bool, settings: QtCore.QSettings | None
     s = settings or _settings()
     s.setValue(STARTUP_TRAY_ENABLED_KEY, bool(enabled))
     s.sync()
+
+
+def load_promote_image_copies(settings: QtCore.QSettings | None = None) -> bool:
+    return bool((settings or _settings()).value(PROMOTE_IMAGE_COPIES_KEY, False, type=bool))
+
+
+def load_remove_extra_image_copies(settings: QtCore.QSettings | None = None) -> bool:
+    return bool((settings or _settings()).value(REMOVE_EXTRA_IMAGE_COPIES_KEY, False, type=bool))
+
+
+def reconcile_image_copies(
+    *,
+    paths: EnginePaths,
+    on_start_or_close: bool = False,
+    directory: Path | None = None,
+    logfn: Callable[[str], None] | None = None,
+) -> tuple[int, int]:
+    """Run live promotion, and delete extra copies only at startup or close."""
+    settings = _settings()
+    return eng.reconcile_archive_image_copies(
+        paths=paths,
+        promote_missing=load_promote_image_copies(settings),
+        remove_extra=on_start_or_close and load_remove_extra_image_copies(settings),
+        directory=directory,
+        logfn=logfn,
+    )
 
 
 def _startup_launcher_command() -> str:
@@ -391,6 +419,7 @@ def run_archive_maintenance(
     missing or outdated icons, and removes orphaned icons. External originals
     are never renamed or deleted here.
     """
+    reconcile_image_copies(paths=paths, logfn=logfn)
     cleanup = clean_generated_icons_dir(paths=paths, logfn=logfn)
     report = eng.scan_archive_sources_and_convert(
         paths=paths,

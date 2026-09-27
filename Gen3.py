@@ -165,6 +165,7 @@ def scan_and_convert(*, autocrop: bool = False, padding_mode: str = "balanced") 
     except Exception:
         pass
 
+    promoted, _ = GenOps.reconcile_image_copies(paths=paths, logfn=_log)
     cleanup = GenOps.clean_generated_icons_dir(paths=paths, logfn=_log)
     mirrored = 0
     for root_raw in _load_watch_folders():
@@ -199,7 +200,8 @@ def scan_and_convert(*, autocrop: bool = False, padding_mode: str = "balanced") 
         logfn=_log,
     )
     if (
-        cleanup.moved_images
+        promoted
+        or cleanup.moved_images
         or cleanup.deleted_files
         or mirrored
         or report.converted
@@ -262,6 +264,7 @@ class TrayAgent(QtWidgets.QSystemTrayIcon):
         self._periodic.start()
         self._event_timer.start()
         app.aboutToQuit.connect(self._wait_for_scan)
+        app.aboutToQuit.connect(self._cleanup_copies_on_close)
         QtCore.QTimer.singleShot(100, self._scan_now)
         QtCore.QTimer.singleShot(250, lambda: self._poll_app_events(force=True))
         self.show()
@@ -363,6 +366,9 @@ class TrayAgent(QtWidgets.QSystemTrayIcon):
             self._scan_thread.quit()
             self._scan_thread.wait()
 
+    def _cleanup_copies_on_close(self) -> None:
+        GenOps.reconcile_image_copies(paths=_current_engine_paths(), on_start_or_close=True, logfn=_log)
+
     def _on_click(self, reason) -> None:
         if reason == QtWidgets.QSystemTrayIcon.Trigger and self.contextMenu():
             self.contextMenu().popup(QtGui.QCursor.pos())
@@ -428,6 +434,7 @@ def main() -> None:
         _logs_dir().mkdir(parents=True, exist_ok=True)
     except Exception:
         pass
+    GenOps.reconcile_image_copies(paths=_current_engine_paths(), on_start_or_close=True, logfn=_log)
     app = QtWidgets.QApplication(sys.argv)
     apply_qt_application_identity(app)
     app.setQuitOnLastWindowClosed(False)

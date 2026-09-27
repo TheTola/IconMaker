@@ -857,6 +857,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # Archive storage paths are resolved before widgets and watchers are
         # built so every surface points at the same managed storage root.
         self._set_archive_storage_paths(root)
+        GenOps.reconcile_image_copies(paths=self.paths, on_start_or_close=True, logfn=self._log)
 
         # App events keep the UI and tray worker synchronized without relying
         # on marker files or direct process-to-process hooks.
@@ -1145,6 +1146,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_change_archive_storage.setCursor(QtCore.Qt.PointingHandCursor)
         self.chk_launch_tray_at_startup = QtWidgets.QCheckBox("Launch Tray at Startup")
         self.chk_launch_tray_at_startup.setChecked(GenOps.load_launch_tray_at_startup(self._settings))
+        self.chk_promote_image_copies = QtWidgets.QCheckBox("Rename copies when the original is deleted")
+        self.chk_promote_image_copies.setChecked(GenOps.load_promote_image_copies(self._settings))
+        self.chk_promote_image_copies.setToolTip("Promote the first remaining copy in Icon Images to the original name.")
+        self.chk_remove_extra_image_copies = QtWidgets.QCheckBox("Remove extra copies at startup and exit")
+        self.chk_remove_extra_image_copies.setChecked(GenOps.load_remove_extra_image_copies(self._settings))
+        self.chk_remove_extra_image_copies.setToolTip("When a numbered copy exists, delete all copies if the original exists.")
         self.edit_sage_url = QtWidgets.QLineEdit(GenOps.load_sage_url(self._settings))
         self.edit_sage_url.setClearButtonEnabled(True)
         self.edit_sage_url.setPlaceholderText("https://chatgpt.com/g/...")
@@ -1160,9 +1167,11 @@ class MainWindow(QtWidgets.QMainWindow):
         archive_grid.addWidget(self.btn_open_archive_storage_root, 3, 0, 1, 2)
         archive_grid.addWidget(self.btn_change_archive_storage, 4, 0, 1, 2)
         archive_grid.addWidget(self.chk_launch_tray_at_startup, 5, 0, 1, 2)
-        archive_grid.addWidget(QtWidgets.QLabel("Sage ChatGPT Link"), 6, 0)
-        archive_grid.addWidget(self.edit_sage_url, 6, 1)
-        archive_grid.addWidget(self.btn_save_sage_url, 7, 0, 1, 2)
+        archive_grid.addWidget(self.chk_promote_image_copies, 6, 0, 1, 2)
+        archive_grid.addWidget(self.chk_remove_extra_image_copies, 7, 0, 1, 2)
+        archive_grid.addWidget(QtWidgets.QLabel("Sage ChatGPT Link"), 8, 0)
+        archive_grid.addWidget(self.edit_sage_url, 8, 1)
+        archive_grid.addWidget(self.btn_save_sage_url, 9, 0, 1, 2)
         archive_layout.addStretch(1)
 
         img_page = QtWidgets.QWidget()
@@ -1506,6 +1515,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_open_current_source_image.clicked.connect(self._open_current_source_image)
         self.btn_open_current_generated_icon.clicked.connect(self._open_current_generated_icon)
         self.chk_launch_tray_at_startup.toggled.connect(self._set_launch_tray_at_startup)
+        self.chk_promote_image_copies.toggled.connect(
+            lambda enabled: self._save_copy_preference(GenOps.PROMOTE_IMAGE_COPIES_KEY, enabled)
+        )
+        self.chk_remove_extra_image_copies.toggled.connect(
+            lambda enabled: self._save_copy_preference(GenOps.REMOVE_EXTRA_IMAGE_COPIES_KEY, enabled)
+        )
         self.title_bar.btn_nav.clicked.connect(self._toggle_settings_view)
         self.view_stack.currentChanged.connect(lambda _: self._sync_view_chrome())
 
@@ -1622,6 +1637,12 @@ class MainWindow(QtWidgets.QMainWindow):
             "Could not update the Windows startup setting for the tray.",
         )
 
+    def _save_copy_preference(self, key: str, enabled: bool) -> None:
+        self._settings.setValue(key, enabled)
+        self._settings.sync()
+        if key == GenOps.PROMOTE_IMAGE_COPIES_KEY and enabled:
+            self._run_archive_maintenance_now("copy-promotion-enabled")
+
     def _sync_view_chrome(self) -> None:
         in_settings = self.view_stack.currentWidget() is self.page_settings
         self.title_bar.set_nav_text("←" if in_settings else "⚙")
@@ -1709,6 +1730,11 @@ class MainWindow(QtWidgets.QMainWindow):
             cleanup = GenOps.clean_generated_icons_dir(paths=self.paths, logfn=lambda s: self._log(s))
             if cleanup.moved_images or cleanup.deleted_files:
                 self._rebuild_archive_watch_paths()
+        promoted, _ = GenOps.reconcile_image_copies(
+            paths=self.paths, directory=Path(changed_path), logfn=self._log
+        )
+        if promoted:
+            self._run_archive_maintenance_now("copy-promotion")
         self._refresh_archive_view()
 
     def _refresh_archive_view(self, immediate: bool = False) -> None:
@@ -2048,6 +2074,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._log(f"Deleted image: {p.name}")
             if self.edit_input.text().strip() == str(p):
                 self.edit_input.clear()
+            GenOps.reconcile_image_copies(paths=self.paths, directory=p.parent, logfn=self._log)
             self._run_archive_maintenance_now("archive-delete")
         except Exception as e:
             self._log(f"ERR: Delete failed: {p} ({e})", "ERR")
@@ -2419,6 +2446,7 @@ class MainWindow(QtWidgets.QMainWindow):
                     self._archive_refresh_thread.wait(1000)
         except Exception:
             pass
+        GenOps.reconcile_image_copies(paths=self.paths, on_start_or_close=True, logfn=self._log)
         super().closeEvent(event)
 
 

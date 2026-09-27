@@ -17,6 +17,7 @@ import argparse
 import json
 import math
 import os
+import re
 import tempfile
 from dataclasses import dataclass
 from io import BytesIO
@@ -85,6 +86,7 @@ __all__ = [
     "make_ico",
     "unique_path",
     "normalize_archive_source_images",
+    "reconcile_archive_image_copies",
     "archive_icon_path_for_source_image",
     "mirror_copy_to_archive_sources",
     "mirror_copy_to_archive_sources_ex",
@@ -96,6 +98,7 @@ __all__ = [
 
 
 IMAGE_EXTS: set[str] = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".tif", ".svg"}
+_COPY_STEM = re.compile(r"^(.+?) - copy(?: \(((?:[2-9]|[1-9]\d+))\))?$", re.IGNORECASE)
 
 DEFAULT_SIZES: List[int] = [16, 24, 32, 48, 64, 128, 256]
 QUALITY_SIZES = (8, 16, 24, 32, 48, 64, 96, 128, 256)
@@ -750,6 +753,76 @@ def make_ico(
 # =========================
 # Archive source management (Icon Images)
 # =========================
+def reconcile_archive_image_copies(
+    *,
+    paths: EnginePaths,
+    promote_missing: bool,
+    remove_extra: bool = False,
+    directory: Path | None = None,
+    logfn: Callable[[str], None] | None = None,
+) -> Tuple[int, int]:
+    """Apply opt-in copy rules only to managed source images, within each folder."""
+    if not promote_missing and not remove_extra:
+        return 0, 0
+
+    root = paths.images_dir
+    if directory is not None:
+        folder = Path(directory)
+        if not folder.is_dir() or not _is_under(folder, root) or _is_reserved_archive_path(folder, paths=paths):
+            return 0, 0
+        folders = [folder]
+    else:
+        folders = sorted({path.parent for path in _iter_archive_source_images(paths=paths, recursive=True)})
+
+    renamed = 0
+    deleted = 0
+    for folder in folders:
+        try:
+            images = [path for path in folder.iterdir() if _is_image_file(path) and not path.is_symlink()]
+        except OSError as exc:
+            _safe_log(logfn, f"Copy cleanup skipped {folder}: {exc}")
+            continue
+
+        names = {path.name.casefold() for path in images}
+        groups: Dict[Tuple[str, str], List[Tuple[int, Path]]] = {}
+        for path in images:
+            match = _COPY_STEM.fullmatch(path.stem)
+            if match:
+                rank = int(match.group(2)) if match.group(2) else 1
+                groups.setdefault((match.group(1).casefold(), path.suffix.casefold()), []).append((rank, path))
+
+        for (base_key, suffix_key), copies in groups.items():
+            base_name = f"{base_key}{suffix_key}"
+            if base_name not in names and promote_missing:
+                _, source = min(copies, key=lambda item: (item[0], item[1].name.casefold()))
+                match = _COPY_STEM.fullmatch(source.stem)
+                if match is not None:
+                    target = source.with_name(f"{match.group(1)}{source.suffix}")
+                    try:
+                        if not target.exists():
+                            source.rename(target)
+                            copies = [(rank, path) for rank, path in copies if path != source]
+                            names.add(base_name)
+                            renamed += 1
+                            _safe_log(logfn, f"Promoted image copy: {source} -> {target}")
+                    except OSError as exc:
+                        _safe_log(logfn, f"Copy promotion failed for {source}: {exc}")
+
+            # A numbered copy activates cleanup; an original plus one plain copy is kept.
+            if remove_extra and base_name in names and any(rank >= 2 for rank, _ in copies):
+                for _, source in copies:
+                    try:
+                        source.unlink()
+                        deleted += 1
+                        _safe_log(logfn, f"Deleted extra image copy: {source}")
+                    except FileNotFoundError:
+                        pass
+                    except OSError as exc:
+                        _safe_log(logfn, f"Copy deletion failed for {source}: {exc}")
+
+    return renamed, deleted
+
+
 def normalize_archive_source_images(
     *,
     paths: EnginePaths,
