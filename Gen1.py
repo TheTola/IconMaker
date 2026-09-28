@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Callable, Optional, Iterable
 
 from StateMemory import StateMemory
+from AppTheme import APPEARANCES, theme_css, theme_manager
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
@@ -27,32 +28,35 @@ from PySide6 import QtCore, QtGui, QtWidgets
 import Gen2 as eng
 import GenOps
 from AppIdentity import (
+    APP_DISPLAY_NAME,
     APP_DISPLAY_VERSION,
     APP_NAME,
     APP_ORG,
     APP_USER_MODEL_ID,
     APP_VERSION,
-    apply_qt_application_identity,
 )
 from GenArchive import ArchiveSidebar, ArchiveEntrySnapshot, THUMB_SIZE
+from ArchiveImageViewer import ArchiveImageViewer
 
 from Gen3 import scan_and_convert
 from Gen4 import get_app_icon
 
 IS_WINDOWS = sys.platform.startswith("win")
 IS_MAC = sys.platform == "darwin"
-SAGE_TOOLTIP = "Open a ChatGPT expressly designed to help you create icons."
+SAGE_TOOLTIP = "Open image generation tools."
 
 APP_DIR = Path(__file__).resolve().parent
 ASSETS_DIR = APP_DIR / "assets"
 
 # These assets define the branded title artwork and the prominent Sage shortcut.
 SAGE_BUTTON_IMAGE_PATH = ASSETS_DIR / "IcoSage.png"
+SAGE_BUTTON_IMAGE_LIGHT_PATH = ASSETS_DIR / "IcoSageLight.png"
 APP_BRANDING_IMAGE_PATH = ASSETS_DIR / "iconner.png"
 
-# The Sage button stays intentionally prominent because it is a primary shortcut.
-HERO_ICON_SIZE = 200
+# Keep the Sage artwork legible within the compact shortcut card.
+HERO_ICON_SIZE = 164
 SAGE_BTN_SIZE = HERO_ICON_SIZE
+COMPLETION_DISPLAY_MS = 8000
 
 
 def _count_files(root: Path) -> int:
@@ -146,6 +150,12 @@ def _pre_app_setup() -> None:
             pass
 
 
+def _yield_to_startup_splash() -> None:
+    app = QtWidgets.QApplication.instance()
+    if app is not None and app.property("iconforgeStartupSplashActive"):
+        app.processEvents(QtCore.QEventLoop.ExcludeUserInputEvents)
+
+
 def _repolish(widget: QtWidgets.QWidget) -> None:
     """Re-apply stylesheet after dynamic property changes."""
     try:
@@ -163,8 +173,8 @@ class CardFrame(QtWidgets.QFrame):
         self.title_label: QtWidgets.QLabel | None = None
 
         lay = QtWidgets.QVBoxLayout(self)
-        lay.setContentsMargins(12, 12, 12, 12)
-        lay.setSpacing(8)
+        lay.setContentsMargins(16, 14, 16, 14)
+        lay.setSpacing(10)
 
         if title:
             t = QtWidgets.QLabel(title)
@@ -173,13 +183,42 @@ class CardFrame(QtWidgets.QFrame):
             self.title_label = t
 
         shadow = QtWidgets.QGraphicsDropShadowEffect(self)
-        shadow.setBlurRadius(48)
-        shadow.setOffset(0, 20)
-        shadow.setColor(QtGui.QColor(0, 0, 0, 160))
+        shadow.setBlurRadius(28)
+        shadow.setOffset(0, 8)
+        shadow.setColor(QtGui.QColor(0, 0, 0, 85))
         self.setGraphicsEffect(shadow)
+        theme_manager().changed.connect(self._apply_shadow_theme)
+        self._apply_shadow_theme()
+
+    def _apply_shadow_theme(self, *_args) -> None:
+        color = QtGui.QColor(32, 67, 96, 38) if theme_manager().appearance == "Light" else QtGui.QColor(0, 0, 0, 85)
+        self.graphicsEffect().setColor(color)
 
     def body_layout(self) -> QtWidgets.QVBoxLayout:
         return self.layout()  # type: ignore[return-value]
+
+
+class ImageSettingsComboBox(QtWidgets.QComboBox):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("ImageSettingsCombo")
+        self.setCursor(QtCore.Qt.PointingHandCursor)
+        self.setFixedHeight(38)
+
+    def paintEvent(self, event: QtGui.QPaintEvent) -> None:
+        super().paintEvent(event)
+        colors = theme_manager().colors
+        painter = QtGui.QPainter(self)
+        painter.setRenderHint(QtGui.QPainter.Antialiasing)
+        color = colors.accent if self.isEnabled() else colors.disabled
+        painter.setPen(QtGui.QPen(
+            QtGui.QColor(color), 2, QtCore.Qt.SolidLine, QtCore.Qt.RoundCap, QtCore.Qt.RoundJoin
+        ))
+        x, y = self.width() - 17, self.height() / 2
+        chevron = QtGui.QPainterPath(QtCore.QPointF(x - 4, y - 2))
+        chevron.lineTo(x, y + 2)
+        chevron.lineTo(x + 4, y - 2)
+        painter.drawPath(chevron)
 
 
 class ScaledAssetLabel(QtWidgets.QLabel):
@@ -193,7 +232,7 @@ class ScaledAssetLabel(QtWidgets.QLabel):
         if pixmap.isNull():
             self._source = QtGui.QPixmap()
             self.setPixmap(QtGui.QPixmap())
-            self.setText(APP_NAME)
+            self.setText(APP_DISPLAY_NAME)
             return
         self._source = pixmap
         self.setText("")
@@ -390,28 +429,6 @@ class NeonCTAButton(QtWidgets.QPushButton):
         super().__init__(text, parent)
         self.setObjectName("NeonCTA")
         self.setCursor(QtCore.Qt.PointingHandCursor)
-        self._fx = QtWidgets.QGraphicsDropShadowEffect(self)
-        self._fx.setOffset(0, 0)
-        self._fx.setBlurRadius(44)
-        self._fx.setColor(QtGui.QColor(0, 220, 255, 180))
-        self.setGraphicsEffect(self._fx)
-
-        self._pulse = QtCore.QPropertyAnimation(self, b"glow")
-        self._pulse.setStartValue(26)
-        self._pulse.setEndValue(64)
-        self._pulse.setDuration(1200)
-        self._pulse.setEasingCurve(QtCore.QEasingCurve.InOutSine)
-        self._pulse.setLoopCount(-1)
-        self._pulse.start()
-
-    def getGlow(self) -> int:
-        return int(self._fx.blurRadius())
-
-    def setGlow(self, v: int) -> None:
-        self._fx.setBlurRadius(v)
-        self._fx.setColor(QtGui.QColor(0, 220, 255, 150 if v < 44 else 220))
-
-    glow = QtCore.Property(int, fget=getGlow, fset=setGlow)
 
 
 class SegmentedMode(QtWidgets.QWidget):
@@ -482,8 +499,8 @@ class NeonRippleIconButton(QtWidgets.QPushButton):
 
         self.setStyleSheet("padding:0px; margin:0px; border:none; background: transparent;")
 
-        self._glow_blur = 18
-        self._glow_alpha = 120
+        self._glow_blur = 14
+        self._glow_alpha = 85
 
         self._ripple_active = False
         self._ripple_center = QtCore.QPointF(0, 0)
@@ -493,7 +510,7 @@ class NeonRippleIconButton(QtWidgets.QPushButton):
         self._glow_fx = QtWidgets.QGraphicsDropShadowEffect(self)
         self._glow_fx.setOffset(0, 0)
         self._glow_fx.setBlurRadius(self._glow_blur)
-        self._glow_fx.setColor(QtGui.QColor(0, 220, 255, self._glow_alpha))
+        self._glow_fx.setColor(QtGui.QColor(54, 201, 232, self._glow_alpha))
         self.setGraphicsEffect(self._glow_fx)
 
         self._glow_anim = QtCore.QPropertyAnimation(self, b"glowBlur", self)
@@ -531,7 +548,7 @@ class NeonRippleIconButton(QtWidgets.QPushButton):
 
     def _set_glow_alpha(self, v: int) -> None:
         self._glow_alpha = int(v)
-        self._glow_fx.setColor(QtGui.QColor(0, 220, 255, max(0, min(255, int(v)))))
+        self._glow_fx.setColor(QtGui.QColor(54, 201, 232, max(0, min(255, int(v)))))
 
     glowAlpha = QtCore.Property(int, fget=_get_glow_alpha, fset=_set_glow_alpha)
 
@@ -576,10 +593,10 @@ class NeonRippleIconButton(QtWidgets.QPushButton):
         self._alpha_anim.stop()
 
         self._glow_anim.setStartValue(self._get_glow_blur())
-        self._glow_anim.setEndValue(54)
+        self._glow_anim.setEndValue(34)
 
         self._alpha_anim.setStartValue(self._get_glow_alpha())
-        self._alpha_anim.setEndValue(235)
+        self._alpha_anim.setEndValue(160)
 
         self._glow_anim.start()
         self._alpha_anim.start()
@@ -590,10 +607,10 @@ class NeonRippleIconButton(QtWidgets.QPushButton):
         self._alpha_anim.stop()
 
         self._glow_anim.setStartValue(self._get_glow_blur())
-        self._glow_anim.setEndValue(18)
+        self._glow_anim.setEndValue(14)
 
         self._alpha_anim.setStartValue(self._get_glow_alpha())
-        self._alpha_anim.setEndValue(120)
+        self._alpha_anim.setEndValue(85)
 
         self._glow_anim.start()
         self._alpha_anim.start()
@@ -610,7 +627,7 @@ class NeonRippleIconButton(QtWidgets.QPushButton):
             self._rip_r_anim.setStartValue(0.0)
             self._rip_r_anim.setEndValue(float(max_r))
 
-            self._rip_o_anim.setStartValue(0.42)
+            self._rip_o_anim.setStartValue(0.22)
             self._rip_o_anim.setEndValue(0.0)
 
             self._rip_group.start()
@@ -631,7 +648,7 @@ class NeonRippleIconButton(QtWidgets.QPushButton):
         p = QtGui.QPainter(self)
         p.setRenderHint(QtGui.QPainter.Antialiasing, True)
 
-        col = QtGui.QColor(0, 220, 255)
+        col = QtGui.QColor(54, 201, 232)
         col.setAlphaF(max(0.0, min(1.0, self._ripple_opacity)))
 
         p.setBrush(QtGui.QBrush(col))
@@ -658,6 +675,7 @@ def choose_archive_storage_root(parent) -> Path | None:
         parent,
         "Choose Archive Storage Location",
         QtCore.QDir.homePath(),
+        options=QtWidgets.QFileDialog.Option.DontUseNativeDialog,
     )
     return Path(p) if p else None
 
@@ -693,7 +711,7 @@ class ArchiveRefreshWorker(QtCore.QObject):
     managed archive so refreshes can stay responsive during watcher updates and
     large archive scans.
     """
-    finished = QtCore.Signal(int, object)
+    finished = QtCore.Signal(int, object, object)
     failed = QtCore.Signal(int, str)
 
     def __init__(
@@ -726,7 +744,8 @@ class ArchiveRefreshWorker(QtCore.QObject):
             # images surface immediately without forcing the user to hunt
             # through an alphabetized grid.
             snapshots.sort(key=lambda item: (-item.signature_mtime, str(item.path).casefold()))
-            self.finished.emit(self.generation, snapshots)
+            watch_paths = GenOps.build_archive_storage_watch_paths(self.paths)
+            self.finished.emit(self.generation, snapshots, watch_paths)
         except Exception as exc:
             self.failed.emit(self.generation, f"{type(exc).__name__}: {exc}")
 
@@ -760,6 +779,9 @@ class ArchiveRefreshWorker(QtCore.QObject):
 
     def _build_thumb(self, path: Path) -> QtGui.QImage | None:
         reader = QtGui.QImageReader(str(path))
+        source_size = reader.size()
+        if source_size.isValid():
+            reader.setScaledSize(source_size.scaled(THUMB_SIZE, THUMB_SIZE, QtCore.Qt.KeepAspectRatio))
         image = reader.read()
         if image.isNull():
             image = QtGui.QImage(str(path))
@@ -825,6 +847,9 @@ class MainWindow(QtWidgets.QMainWindow):
             self.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
 
         self._settings = QtCore.QSettings(APP_ORG, APP_NAME)
+        self._theme = theme_manager()
+        self._sage_process: subprocess.Popen | None = None
+        self._image_viewers: set[ArchiveImageViewer] = set()
         GenOps.apply_launch_tray_at_startup(settings=self._settings)
 
         # The UI keeps a lightweight in-memory log so status labels and dialogs
@@ -838,6 +863,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._operation_worker: OperationWorker | None = None
         self._operation_result: object | None = None
         self._operation_error: str | None = None
+        self._archive_full_pass_running = False
         self._close_when_idle = False
 
         root = GenOps.load_archive_storage_root(self._settings)
@@ -847,17 +873,17 @@ class MainWindow(QtWidgets.QMainWindow):
             if not chosen:
                 QtWidgets.QMessageBox.critical(
                     self,
-                    "IconMaker",
+                    APP_DISPLAY_NAME,
                     "An Archive Storage location is required to continue.",
                 )
                 sys.exit(1)
             GenOps.save_archive_storage_root(chosen, self._settings)
+            GenOps.publish_app_event("archive-storage-root-chosen", str(chosen))
             root = chosen
 
         # Archive storage paths are resolved before widgets and watchers are
         # built so every surface points at the same managed storage root.
         self._set_archive_storage_paths(root)
-        GenOps.reconcile_image_copies(paths=self.paths, on_start_or_close=True, logfn=self._log)
 
         # App events keep the UI and tray worker synchronized without relying
         # on marker files or direct process-to-process hooks.
@@ -871,6 +897,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self._archive_refresh_timer.setSingleShot(True)
         self._archive_refresh_timer.setInterval(300)
         self._archive_refresh_timer.timeout.connect(self._begin_archive_refresh)
+        self._archive_auto_convert_timer = QtCore.QTimer(self)
+        self._archive_auto_convert_timer.setSingleShot(True)
+        self._archive_auto_convert_timer.setInterval(1500)
+        self._archive_auto_convert_timer.timeout.connect(self._begin_watched_image_conversion)
+        self._archive_image_signatures: dict[str, tuple[int, float]] | None = None
+        self._archive_auto_convert_candidates: dict[str, tuple[int, float]] = {}
+        self._archive_auto_convert_pending = False
         self._archive_refresh_running = False
         self._archive_refresh_pending = False
         self._archive_refresh_generation = 0
@@ -879,6 +912,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._app_icon = get_app_icon()
         self.setWindowIcon(self._app_icon)
+        _yield_to_startup_splash()
 
         self.setWindowTitle(APP_DISPLAY_VERSION)
         self.setMinimumSize(1180, 760)
@@ -886,15 +920,13 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._build_ui()
         self._apply_theme()
+        self._theme.changed.connect(self._apply_theme)
+        self._theme.preferenceChanged.connect(self._sync_theme_selection)
         self._wire()
 
         self.state = StateMemory(APP_ORG, APP_NAME, logger=self._log)
         self.state.load_to_ui(self)
         self.state.install_auto_save(self)
-
-        pad = self._settings.value("last_padding", "balanced", str)
-        if self.cmb_padding.findText(pad) >= 0:
-            self.cmb_padding.setCurrentText(pad)
 
         try:
             self.state.apply_truthful_source_ui(self)
@@ -903,7 +935,6 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._log("Ready.")
         self._lock_output_to_canonical()
-        self._rebuild_archive_watch_paths()
         self._refresh_archive_view(immediate=True)
         self._events_timer.start()
         self._poll_app_events(force=True)
@@ -914,10 +945,19 @@ class MainWindow(QtWidgets.QMainWindow):
         QtCore.QTimer.singleShot(0, self._startup_scan)
 
     def _startup_scan(self) -> None:
-        self._start_operation("startup", lambda *_: scan_and_convert(), "Scanning archive...")
+        def work(_progress, log, _cancelled):
+            GenOps.reconcile_image_copies(paths=self.paths, on_start_or_close=True, logfn=log)
+            return scan_and_convert()
+
+        self._start_operation("startup", work, "Scanning archive...")
 
     def _set_archive_storage_paths(self, archive_storage_root: Path) -> None:
         root = Path(archive_storage_root).resolve()
+        if hasattr(self, "_archive_auto_convert_timer"):
+            self._archive_auto_convert_timer.stop()
+            self._archive_image_signatures = None
+            self._archive_auto_convert_candidates.clear()
+            self._archive_auto_convert_pending = False
         self.archive_storage_root = root
         self.paths = eng.EnginePaths.from_archive_storage_root(root)
 
@@ -968,6 +1008,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.archive_sidebar = ArchiveSidebar(self)
         body_layout.addWidget(self.archive_sidebar)
         self.archive_sidebar.filesDropped.connect(self._import_paths_to_archive_storage)
+        _yield_to_startup_splash()
 
         source = CardFrame('Source')
         self.source_card = source
@@ -978,12 +1019,16 @@ class MainWindow(QtWidgets.QMainWindow):
         source.body_layout().addLayout(sg)
 
         self.mode_seg = SegmentedMode()
+        self.mode_seg.setFixedWidth(240)
         sg.addWidget(self.mode_seg, 0, 0, 1, 3)
 
         self.edit_input = DropLineEdit()
         self.edit_input.setPlaceholderText("Select Image...")
         self.btn_browse_input = QtWidgets.QPushButton("Select Image...")
         self.btn_browse_input.setCursor(QtCore.Qt.PointingHandCursor)
+        self.btn_browse_input.setFixedWidth(160)
+        sg.setColumnStretch(0, 1)
+        sg.setColumnStretch(1, 1)
         sg.addWidget(self.edit_input, 1, 0, 1, 2)
         sg.addWidget(self.btn_browse_input, 1, 2)
 
@@ -1008,47 +1053,73 @@ class MainWindow(QtWidgets.QMainWindow):
         source.body_layout().addLayout(self.quick_action_row)
 
         run_card = CardFrame('Conversion')
+        # Nested graphics effects can paint a rectangular shadow over the progress row.
+        run_card.graphicsEffect().setEnabled(False)
+        run_card.setProperty("sectionKind", "conversion")
         left.addWidget(run_card)
         run_layout = run_card.body_layout()
 
         btn_row = QtWidgets.QHBoxLayout()
         btn_row.setSpacing(8)
         self.btn_run = NeonCTAButton('Run')
-        self.btn_cancel = QtWidgets.QPushButton('Cancel')
-        self.btn_cancel.setObjectName('CancelBtn')
-        self.btn_cancel.setCursor(QtCore.Qt.PointingHandCursor)
-        self.btn_cancel.setEnabled(False)
+        self.btn_run.setFixedWidth(132)
+        self.btn_run.setFixedHeight(40)
         btn_row.addWidget(self.btn_run)
-        btn_row.addWidget(self.btn_cancel)
         btn_row.addStretch(1)
         run_layout.addLayout(btn_row)
 
         self.bar = QtWidgets.QProgressBar()
         self.bar.setRange(0, 100)
         self.bar.setValue(0)
+        self.bar.setFixedHeight(20)
+        self._progress_opacity = QtWidgets.QGraphicsOpacityEffect(self.bar)
+        self._progress_opacity.setOpacity(0.0)
+        self.bar.setGraphicsEffect(self._progress_opacity)
+        self._progress_fade = QtCore.QPropertyAnimation(self._progress_opacity, b"opacity", self)
+        self._progress_fade.finished.connect(self._finish_visibility_fades)
+        self.bar.hide()
         self.status_line = QtWidgets.QLabel('Ready.')
         self.status_line.setObjectName('StatusLine')
+        self.result_detail = QtWidgets.QLabel()
+        self.result_detail.setObjectName('ResultDetail')
+        self.result_detail.setWordWrap(True)
+        self._detail_opacity = QtWidgets.QGraphicsOpacityEffect(self.result_detail)
+        self._detail_opacity.setOpacity(0.0)
+        self.result_detail.setGraphicsEffect(self._detail_opacity)
+        self._detail_fade = QtCore.QPropertyAnimation(self._detail_opacity, b"opacity", self)
+        self._detail_fade.finished.connect(self._finish_visibility_fades)
+        self.result_detail.hide()
+        self._completion_display_state = "none"
+        self._completion_idle_timer = QtCore.QTimer(self)
+        self._completion_idle_timer.setSingleShot(True)
+        self._completion_idle_timer.setInterval(COMPLETION_DISPLAY_MS)
+        self._completion_idle_timer.timeout.connect(self._fade_completed_display)
         run_layout.addWidget(self.bar)
         run_layout.addWidget(self.status_line)
+        run_layout.addWidget(self.result_detail)
 
         sage_card = CardFrame('Sage')
         sage_card.setProperty("sageCard", True)
         left.addWidget(sage_card)
         sage_layout = QtWidgets.QHBoxLayout()
         sage_layout.setContentsMargins(0, 0, 0, 0)
-        sage_layout.setSpacing(16)
+        sage_layout.setSpacing(18)
         sage_card.body_layout().addLayout(sage_layout)
+        sage_layout.addStretch(1)
 
         self.btn_sage = NeonRippleIconButton()
         self.btn_sage.setToolTip(SAGE_TOOLTIP)
-        self.btn_sage.set_icon_from_png(SAGE_BUTTON_IMAGE_PATH)
+        self._apply_sage_artwork()
         sage_layout.addWidget(self.btn_sage, 0, QtCore.Qt.AlignVCenter)
-        self.btn_sage.clicked.connect(self._open_sage_url)
-        sage_hint = QtWidgets.QLabel('Open Sage for help creating icons.')
+        self.btn_sage.clicked.connect(self._open_sage_popup)
+        sage_hint = QtWidgets.QLabel('Open image generation tools.')
         sage_hint.setObjectName('SageHint')
         sage_hint.setWordWrap(True)
-        sage_layout.addWidget(sage_hint, 1, QtCore.Qt.AlignVCenter)
+        sage_hint.setMaximumWidth(270)
+        sage_layout.addWidget(sage_hint, 0, QtCore.Qt.AlignVCenter)
+        sage_layout.addStretch(1)
         left.addStretch(1)
+        _yield_to_startup_splash()
 
         self.page_settings = QtWidgets.QWidget()
         self.view_stack.addWidget(self.page_settings)
@@ -1088,8 +1159,9 @@ class MainWindow(QtWidgets.QMainWindow):
         nav.body_layout().addLayout(nav_layout)
         self.btn_settings_archive_storage = QtWidgets.QPushButton("Archive Settings")
         self.btn_settings_image = QtWidgets.QPushButton("Images")
+        self.btn_settings_themes = QtWidgets.QPushButton("Themes")
         self.btn_settings_exit = QtWidgets.QPushButton("Exit")
-        for b in (self.btn_settings_archive_storage, self.btn_settings_image):
+        for b in (self.btn_settings_archive_storage, self.btn_settings_image, self.btn_settings_themes):
             b.setObjectName("SettingsNavButton")
             b.setCursor(QtCore.Qt.PointingHandCursor)
             b.setCheckable(True)
@@ -1101,8 +1173,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_settings_exit.setCursor(QtCore.Qt.PointingHandCursor)
         self.btn_settings_exit.setMinimumHeight(38)
         self.btn_settings_exit.setMinimumWidth(136)
-        nav_layout.addWidget(self.btn_settings_exit)
         nav_layout.addStretch(1)
+        nav_layout.addWidget(self.btn_settings_exit)
         upper_layout.addWidget(nav,0)
 
         self.settings_stack = QtWidgets.QStackedWidget()
@@ -1115,7 +1187,7 @@ class MainWindow(QtWidgets.QMainWindow):
         archive_layout.setSpacing(10)
         self.settings_stack.addWidget(archive_page)
 
-        archive_card = CardFrame("Archive Settings")
+        archive_card = CardFrame("Archive Storage")
         if archive_card.title_label is not None:
             archive_card.title_label.setObjectName("SettingsSectionTitle")
         archive_layout.addWidget(archive_card)
@@ -1152,27 +1224,32 @@ class MainWindow(QtWidgets.QMainWindow):
         self.chk_remove_extra_image_copies = QtWidgets.QCheckBox("Remove extra copies at startup and exit")
         self.chk_remove_extra_image_copies.setChecked(GenOps.load_remove_extra_image_copies(self._settings))
         self.chk_remove_extra_image_copies.setToolTip("When a numbered copy exists, delete all copies if the original exists.")
-        self.edit_sage_url = QtWidgets.QLineEdit(GenOps.load_sage_url(self._settings))
-        self.edit_sage_url.setClearButtonEnabled(True)
-        self.edit_sage_url.setPlaceholderText("https://chatgpt.com/g/...")
-        self.btn_save_sage_url = QtWidgets.QPushButton("Save Sage ChatGPT Link")
-        self.btn_save_sage_url.setCursor(QtCore.Qt.PointingHandCursor)
-
         archive_grid.addWidget(QtWidgets.QLabel("Archive Storage Root"), 0, 0)
         archive_grid.addWidget(self.lbl_archive_storage_root, 0, 1)
         archive_grid.addWidget(QtWidgets.QLabel("Source Images Folder"), 1, 0)
         archive_grid.addWidget(self.lbl_source_images_dir, 1, 1)
         archive_grid.addWidget(QtWidgets.QLabel("Generated Icons Folder"), 2, 0)
         archive_grid.addWidget(self.lbl_generated_icons_dir, 2, 1)
-        archive_grid.addWidget(self.btn_open_archive_storage_root, 3, 0, 1, 2)
-        archive_grid.addWidget(self.btn_change_archive_storage, 4, 0, 1, 2)
-        archive_grid.addWidget(self.chk_launch_tray_at_startup, 5, 0, 1, 2)
-        archive_grid.addWidget(self.chk_promote_image_copies, 6, 0, 1, 2)
-        archive_grid.addWidget(self.chk_remove_extra_image_copies, 7, 0, 1, 2)
-        archive_grid.addWidget(QtWidgets.QLabel("Sage ChatGPT Link"), 8, 0)
-        archive_grid.addWidget(self.edit_sage_url, 8, 1)
-        archive_grid.addWidget(self.btn_save_sage_url, 9, 0, 1, 2)
+        path_actions = QtWidgets.QHBoxLayout()
+        path_actions.setSpacing(8)
+        path_actions.addWidget(self.btn_open_archive_storage_root)
+        path_actions.addWidget(self.btn_change_archive_storage)
+        path_actions.addStretch(1)
+        archive_grid.addLayout(path_actions, 3, 0, 1, 2)
+
+        maintenance_card = CardFrame("Archive Maintenance")
+        if maintenance_card.title_label is not None:
+            maintenance_card.title_label.setObjectName("SettingsSectionTitle")
+        archive_layout.addWidget(maintenance_card)
+        for option in (
+            self.chk_launch_tray_at_startup,
+            self.chk_promote_image_copies,
+            self.chk_remove_extra_image_copies,
+        ):
+            maintenance_card.body_layout().addWidget(option)
+
         archive_layout.addStretch(1)
+        _yield_to_startup_splash()
 
         img_page = QtWidgets.QWidget()
         img_layout = QtWidgets.QVBoxLayout(img_page)
@@ -1189,21 +1266,25 @@ class MainWindow(QtWidgets.QMainWindow):
         g.setVerticalSpacing(10)
         opt.body_layout().addLayout(g)
 
-        self.cmb_quality_min = QtWidgets.QComboBox()
-        self.cmb_quality_max = QtWidgets.QComboBox()
+        self.cmb_quality_min = ImageSettingsComboBox()
+        self.cmb_quality_max = ImageSettingsComboBox()
         for combo in (self.cmb_quality_min, self.cmb_quality_max):
-            combo.setCursor(QtCore.Qt.PointingHandCursor)
             combo.addItems([str(size) for size in eng.QUALITY_SIZES])
+            combo.setFixedWidth(124)
         self.set_quality_preset("16-256")
         self.cmb_quality_min.currentIndexChanged.connect(self._quality_min_changed)
         self.cmb_quality_max.currentIndexChanged.connect(self._quality_max_changed)
         self.chk_overwrite = QtWidgets.QCheckBox("Overwrite Mode")
         self.chk_overwrite.setChecked(True)
-        self.cmb_padding = QtWidgets.QComboBox()
+        self.chk_overwrite.setToolTip(
+            "Controls the selected Run input. After any icon is created, the archive is refreshed."
+        )
+        self.cmb_padding = ImageSettingsComboBox()
         self.cmb_padding.addItems(list(eng.PADDING_PRESETS.keys()))
-        self.cmb_padding.setCurrentText("balanced")
-        quality_label = QtWidgets.QLabel("Quality Preset")
-        quality_label.setToolTip("Choose the smallest and largest sizes stored in each generated icon.")
+        self.cmb_padding.setCurrentText("None")
+        self.cmb_padding.setFixedWidth(220)
+        quality_label = QtWidgets.QLabel("ICO Sizes")
+        quality_label.setToolTip("Choose the smallest and largest frames in the Windows icon.")
         g.addWidget(quality_label, 0, 0)
         quality_controls = QtWidgets.QHBoxLayout()
         quality_controls.setSpacing(8)
@@ -1211,8 +1292,9 @@ class MainWindow(QtWidgets.QMainWindow):
         quality_controls.addWidget(self.cmb_quality_min)
         quality_controls.addWidget(QtWidgets.QLabel("Max"))
         quality_controls.addWidget(self.cmb_quality_max)
+        quality_controls.addStretch(1)
         g.addLayout(quality_controls, 0, 1)
-        quality_hint = QtWidgets.QLabel("Icon frame sizes, 8–256 px. Includes each standard size in the selected range.")
+        quality_hint = QtWidgets.QLabel("Frames: 8–256 px, including standard sizes in the selected range. Source images keep their original resolution.")
         quality_hint.setObjectName("SettingHint")
         quality_hint.setWordWrap(True)
         g.addWidget(quality_hint, 1, 1)
@@ -1221,9 +1303,33 @@ class MainWindow(QtWidgets.QMainWindow):
         g.addWidget(self.chk_overwrite, 3, 0, 1, 2)
 
         img_layout.addStretch(1)
+        _yield_to_startup_splash()
+
+        themes_page = QtWidgets.QWidget()
+        themes_layout = QtWidgets.QVBoxLayout(themes_page)
+        themes_layout.setContentsMargins(0, 0, 0, 0)
+        themes_layout.setSpacing(10)
+        self.settings_stack.addWidget(themes_page)
+        themes_card = CardFrame("Themes")
+        if themes_card.title_label is not None:
+            themes_card.title_label.setObjectName("SettingsSectionTitle")
+        themes_layout.addWidget(themes_card)
+        self.theme_buttons: dict[str, QtWidgets.QRadioButton] = {}
+        for appearance in APPEARANCES:
+            button = QtWidgets.QRadioButton(appearance)
+            button.setObjectName("ThemeOption")
+            button.setCursor(QtCore.Qt.PointingHandCursor)
+            button.setChecked(self._theme.preference == appearance)
+            button.toggled.connect(
+                lambda checked, selected=appearance: self._theme.select(selected) if checked else None
+            )
+            themes_card.body_layout().addWidget(button)
+            self.theme_buttons[appearance] = button
+        themes_layout.addStretch(1)
 
         self.btn_settings_archive_storage.clicked.connect(lambda: self.settings_stack.setCurrentIndex(0))
         self.btn_settings_image.clicked.connect(lambda: self.settings_stack.setCurrentIndex(1))
+        self.btn_settings_themes.clicked.connect(lambda: self.settings_stack.setCurrentIndex(2))
         self.btn_settings_exit.clicked.connect(self._exit_iconmaker)
         self.settings_stack.setCurrentIndex(0)
         self._sync_settings_navigation(0)
@@ -1231,77 +1337,83 @@ class MainWindow(QtWidgets.QMainWindow):
         self._sync_view_chrome()
 
 
+    def _apply_sage_artwork(self) -> None:
+        path = SAGE_BUTTON_IMAGE_LIGHT_PATH if self._theme.appearance == "Light" else SAGE_BUTTON_IMAGE_PATH
+        self.btn_sage.set_icon_from_png(path)
+
     def _apply_theme(self) -> None:
         f = self.font()
         if IS_WINDOWS:
             f.setFamily("Segoe UI Variable")
-        f.setPointSize(11)
+        f.setPointSize(10)
         self.setFont(f)
 
-        self.setStyleSheet(r"""
+        self.setStyleSheet(theme_css(r"""
         QMainWindow {
             background: transparent;
         }
         #AppRoot {
-            border-radius: 22px;
+            border-radius: 18px;
             background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                stop:0 #060812, stop:0.45 #070B18, stop:1 #0B0620);
-            border: 1px solid rgba(255,255,255,0.07);
+                stop:0 #070c18, stop:0.6 #0a1020, stop:1 #130d26);
+            border: 1px solid #243049;
         }
         #AppTitleBar {
-            border-radius: 16px;
+            border-radius: 14px;
             background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                stop:0 rgba(10, 16, 34, 0.96),
-                stop:0.55 rgba(11, 19, 52, 0.96),
-                stop:1 rgba(31, 9, 46, 0.96));
-            border: 1px solid rgba(255,255,255,0.08);
+                stop:0 #10243e, stop:0.5 #151b3a, stop:1 #291530);
+            border: 1px solid #34445f;
+            border-bottom: 1px solid #2f8096;
         }
         #AppTitleBar[nativeChrome="true"] {
             border-radius: 14px;
-            background: rgba(10, 16, 34, 0.74);
-            border: 1px solid rgba(255,255,255,0.06);
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                stop:0 #10243e, stop:0.5 #151b3a, stop:1 #291530);
+            border: 1px solid #34445f;
+            border-bottom: 1px solid #2f8096;
         }
         #TitleBarBrand {
             background: transparent;
         }
         QPushButton#TitleBarNavButton {
-            border-radius: 10px;
-            padding: 3px 14px;
-            background-color: rgba(255,255,255,0.05);
-            border: 1px solid rgba(255,255,255,0.09);
-            color: rgba(234,242,255,230);
-            font-size: 19px;
-            font-weight: 800;
+            border-radius: 9px;
+            padding: 3px 12px;
+            background-color: rgba(43, 58, 88, 0.62);
+            border: 1px solid rgba(148, 181, 219, 0.24);
+            color: #dbe5f2;
+            font-size: 17px;
+            font-weight: 600;
         }
         QPushButton#TitleBarNavButton:hover {
-            border-color: rgba(0,220,255,0.42);
-            background-color: rgba(0,220,255,0.10);
+            border-color: rgba(54,201,232,0.42);
+            background-color: #1b3445;
         }
         QToolButton#WindowControl, QToolButton#WindowCloseControl {
-            border-radius: 10px;
-            border: 1px solid rgba(255,255,255,0.08);
-            background: rgba(255,255,255,0.05);
-            color: rgba(234,242,255,235);
+            border-radius: 9px;
+            border: 1px solid rgba(148, 181, 219, 0.22);
+            background-color: rgba(43, 58, 88, 0.58);
+            color: #dbe5f2;
             font-size: 14px;
-            font-weight: 900;
+            font-weight: 600;
         }
         QToolButton#WindowControl:hover {
-            border-color: rgba(0,220,255,0.45);
-            background: rgba(0,220,255,0.10);
+            border-color: rgba(54,201,232,0.42);
+            background-color: #1b3445;
         }
         QToolButton#WindowCloseControl:hover {
             border-color: rgba(255,92,92,0.65);
             background: rgba(255,92,92,0.18);
         }
         #Hero {
-            border-radius: 18px;
+            border-radius: 14px;
             background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                stop:0 #081026, stop:0.55 #0B1240, stop:1 #24063D);
-            border: 1px solid rgba(255,255,255,0.06);
+                stop:0 #132641, stop:0.55 #191c3b, stop:1 #28162f);
+            border: 1px solid #354861;
+            border-bottom: 1px solid #2b758b;
         }
         #AppMark {background: transparent;
         }
-        #HeroTitle { color: #FFFFFF; font-size: 24px; font-weight: 900; letter-spacing: 0.6px; }
+        #HeroTitle { color: #f2f6fc; font-size: 21px; font-weight: 600; }
         #MainHeaderStrip {
             border-radius: 16px;
             background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
@@ -1321,71 +1433,100 @@ class MainWindow(QtWidgets.QMainWindow):
         }
 
         #Card {
-            border-radius: 18px;
-            background-color: rgba(13, 18, 38, 0.72);
-            border: 1px solid rgba(255,255,255,0.07);
+            border-radius: 14px;
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 #152139, stop:1 #0e172b);
+            border: 1px solid #38657c;
+            border-top: 1px solid #4b9bb1;
+        }
+        #Card[sectionKind="conversion"] {
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 #12283c, stop:1 #0e1b30);
         }
         #Card[sageCard="true"] {
             background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                stop:0 rgba(9, 16, 34, 0.92),
-                stop:1 rgba(13, 20, 44, 0.84));
-            border: 1px solid rgba(0,220,255,0.16);
+                stop:0 #11283d, stop:0.58 #171d3a, stop:1 #25152f);
         }
         #CardTitle {
-            color: rgba(234,242,255,230);
-            font-weight: 900;
-            font-size: 13px;
-            letter-spacing: 0.4px;
+            color: #f1f6fd;
+            font-weight: 600;
+            font-size: 15px;
         }
         #SettingsSectionTitle {
-            color: rgba(234,242,255,220);
-            font-weight: 900;
-            font-size: 11px;
-            letter-spacing: 0.2px;
+            color: #e9f2fb;
+            font-weight: 600;
+            font-size: 13px;
         }
         #StatusLine {
-            color: rgba(234,242,255,220);
-            font-weight: 700;
+            color: #d2e0ef;
+            font-weight: 600;
         }
-        #SageHint, #SettingHint {
-            color: rgba(234,242,255,175);
+        #ResultDetail {
+            color: #b9c9da;
             font-size: 11px;
+        }
+        #SageHint {
+            color: #e1eaf6;
+            font-size: 14px;
+            font-weight: 600;
+        }
+        #SettingHint {
+            color: #b7c5d7;
+            font-size: 12px;
         }
         QLabel#VersionWatermark {
             padding: 0 2px;
             background: transparent;
-            color: rgba(234,242,255,153);
+            color: #8493a8;
             font-size: 10px;
-            font-weight: 700;
+            font-weight: 500;
         }
         #FixedOutPath {
-            border-radius: 10px;
-            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 8px;
+            border: 1px solid #263248;
             padding: 8px 10px;
-            background-color: rgba(7, 10, 18, 0.42);
-            color: rgba(234,242,255,230);
+            background-color: #0b1423;
+            color: #dbe5f2;
         }
 
-        QLabel { color: rgba(234,242,255,220); }
-        QCheckBox { color: rgba(234,242,255,220); font-weight: 800; }
+        QLabel { color: #dbe5f2; }
+        QCheckBox { color: #dbe5f2; font-weight: 500; }
 
         QLineEdit, QPlainTextEdit, QComboBox, QListWidget {
-            border-radius: 10px;
-            border: 1px solid rgba(255,255,255,0.08);
-            padding: 9px 11px;
-            background-color: rgba(7, 10, 18, 0.62);
-            color: rgba(234,242,255,230);
+            border-radius: 9px;
+            border: 1px solid #273348;
+            padding: 8px 10px;
+            background-color: #0b1423;
+            color: #e3ebf5;
         }
         QLineEdit:focus, QComboBox:focus {
-            border: 1px solid rgba(0,220,255,0.65);
-            background-color: rgba(10, 17, 34, 0.88);
+            border: 1px solid #36c9e8;
+            background-color: #101d2d;
         }
         QComboBox QAbstractItemView {
-            background-color: #10182d;
-            color: #eaf2ff;
-            selection-background-color: #21465c;
+            background-color: #101827;
+            color: #e3ebf5;
+            selection-background-color: #23465a;
             selection-color: #ffffff;
         }
+        QComboBox#ImageSettingsCombo {
+            border-radius: 10px;
+            padding: 7px 40px 7px 12px;
+        }
+        QComboBox#ImageSettingsCombo:hover {
+            border-color: #4b9bb1;
+        }
+        QComboBox#ImageSettingsCombo::drop-down {
+            subcontrol-origin: padding;
+            subcontrol-position: top right;
+            width: 32px;
+            border: none;
+            border-left: 1px solid #273348;
+            border-top-right-radius: 9px;
+            border-bottom-right-radius: 9px;
+            background: #182b3d;
+        }
+        QComboBox#ImageSettingsCombo::down-arrow { image: none; }
 
         QListWidget::item {
             border-radius: 10px;
@@ -1403,76 +1544,91 @@ class MainWindow(QtWidgets.QMainWindow):
 
 
         QPushButton {
-            border-radius: 12px;
-            padding: 10px 12px;
-            background-color: rgba(255,255,255,0.06);
-            border: 1px solid rgba(255,255,255,0.10);
-            color: rgba(234,242,255,230);
-            font-weight: 900;
+            border-radius: 9px;
+            padding: 8px 12px;
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 #263851, stop:1 #18243a);
+            border: 1px solid #40516a;
+            color: #e0ebf8;
+            font-weight: 600;
         }
-        QPushButton:hover { border-color: rgba(0,220,255,0.45); }
-        QPushButton:pressed { background-color: rgba(0,220,255,0.10); }
+        QPushButton:hover { border-color: #4caac4; background-color: #264359; }
+        QPushButton:pressed { background-color: #173144; }
 
         QPushButton:disabled {
-            background-color: rgba(255,255,255,0.035);
-            color: rgba(234,242,255,105);
-            border: 1px solid rgba(255,255,255,0.06);
+            background-color: #131c2a;
+            color: #738298;
+            border: 1px solid #222d3e;
         }
         QPushButton#QuickActionButton {
-            padding: 6px 12px;
+            padding: 6px 10px;
             font-size: 11px;
-            font-weight: 800;
-            background-color: rgba(255,255,255,0.05);
+            font-weight: 500;
+            background-color: #152031;
         }
         QPushButton#QuickActionButton:hover {
-            border-color: rgba(0,220,255,0.45);
-            background-color: rgba(0,220,255,0.10);
+            border-color: rgba(54,201,232,0.45);
+            background-color: #1b3445;
         }
         QPushButton#SettingsExitButton {
-            padding: 7px 14px;
-            font-size: 11px;
-            font-weight: 900;
-            color: rgba(255, 240, 240, 0.96);
-            background-color: rgba(94, 16, 16, 0.94);
-            border: 1px solid rgba(184, 64, 64, 0.72);
-            border-radius: 10px;
+            color: #a9b8ca;
+            background-color: transparent;
+            border: 1px solid #2b394d;
         }
         QPushButton#SettingsExitButton:hover {
-            background-color: rgba(122, 22, 22, 0.96);
-            border-color: rgba(232, 96, 96, 0.86);
+            background-color: rgba(174, 72, 72, 0.14);
+            border-color: rgba(232, 96, 96, 0.55);
+            color: #f4d6d6;
         }
         QPushButton#SettingsExitButton:pressed {
-            background-color: rgba(72, 12, 12, 0.98);
+            background-color: rgba(174, 72, 72, 0.22);
         }
         QPushButton#SettingsNavButton {
-            font-size: 10px;
-            padding: 8px 10px;
+            font-size: 12px;
+            padding: 8px 12px;
             text-align: left;
         }
         QPushButton#SettingsNavButton:checked {
-            color: #ffffff;
-            background-color: rgba(0,220,255,0.16);
-            border: 1px solid rgba(0,220,255,0.42);
+            color: #ecfaff;
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                stop:0 #164660, stop:1 #252d55);
+            border: 1px solid #4aa5bb;
         }
 
         #NeonCTA {
-            background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                stop:0 rgba(0,220,255,0.22),
-                stop:1 rgba(123,92,255,0.20));
-            border: 1px solid rgba(0,220,255,0.40);
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 #70e4f3, stop:0.48 #35c3e1, stop:1 #168daf);
+            border: 1px solid #8be7f3;
+            color: #071b26;
+            font-weight: 700;
         }
-
-        #CancelBtn { border: 1px solid rgba(255,255,255,0.14); }
+        #NeonCTA:hover:enabled {
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 #a0f1f6, stop:1 #2bb5d4);
+        }
+        #NeonCTA:disabled {
+            background-color: #173745;
+            border: 1px solid #275060;
+            color: #8aa9b4;
+        }
+        #NeonCTA[cancelMode="true"] {
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 #244358, stop:1 #162d44);
+            border: 1px solid #5db4cb;
+            color: #e7f6fa;
+        }
 
         QProgressBar {
-            border-radius: 10px;
-            border: 1px solid rgba(255,255,255,0.10);
+            border-radius: 7px;
+            border: 1px solid #273348;
             text-align: center;
-            background-color: rgba(0,0,0,0.25);
+            background-color: #0b1423;
+            color: #a9b8ca;
         }
         QProgressBar::chunk {
-            border-radius: 10px;
-            background-color: rgba(0,220,255,0.55);
+            border-radius: 7px;
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                stop:0 #2daccf, stop:1 #69e2eb);
         }
 
         #SageIconBtn {
@@ -1485,24 +1641,26 @@ class MainWindow(QtWidgets.QMainWindow):
         #SageIconBtn:pressed { border: none; background: transparent; }
 
         #ModeImageBtn, #ModeFolderBtn {
-            border-radius: 12px;
-            padding: 10px 12px;
-            font-weight: 900;
-            background-color: rgba(255,255,255,0.06);
-            border: 1px solid rgba(255,255,255,0.10);
-            color: rgba(234,242,255,230);
+            border-radius: 9px;
+            padding: 7px 10px;
+            font-weight: 600;
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 #263851, stop:1 #17243a);
+            border: 1px solid #40516a;
+            color: #dbe5f2;
         }
-        #ModeImageBtn:checked {
-            background-color: #EFBF04;
-            border: 1px solid #EFBF04;
-            color: black;
+        #ModeImageBtn:checked, #ModeFolderBtn:checked {
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 #f2ce75, stop:1 #c89236);
+            border: 1px solid #f4d787;
+            color: #19202b;
         }
-        #ModeFolderBtn:checked {
-            background-color: #C0C0C0;
-            border: 1px solid #C0C0C0;
-            color: black;
-        }
-        """)
+        QRadioButton#ThemeOption { color: #dbe5f2; font-size: 13px; padding: 8px; }
+        QRadioButton#ThemeOption::indicator { width: 16px; height: 16px; background: #0b1423; border: 1px solid #4b9bb1; border-radius: 8px; }
+        QRadioButton#ThemeOption::indicator:checked { background: #36c9e8; border-color: #36c9e8; }
+        QRadioButton#ThemeOption:checked { color: #36c9e8; font-weight: 600; }
+        """))
+        self._apply_sage_artwork()
 
     def _wire(self) -> None:
         self.btn_browse_input.clicked.connect(self._browse_input)  # type: ignore[arg-type]
@@ -1511,7 +1669,6 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.btn_open_archive_storage_root.clicked.connect(lambda: _open_path(str(self.paths.storage_root)))
         self.btn_change_archive_storage.clicked.connect(self._change_archive_storage_location)  # type: ignore[arg-type]
-        self.btn_save_sage_url.clicked.connect(self._save_sage_url)
         self.btn_open_current_source_image.clicked.connect(self._open_current_source_image)
         self.btn_open_current_generated_icon.clicked.connect(self._open_current_generated_icon)
         self.chk_launch_tray_at_startup.toggled.connect(self._set_launch_tray_at_startup)
@@ -1525,7 +1682,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.view_stack.currentChanged.connect(lambda _: self._sync_view_chrome())
 
         self.btn_run.clicked.connect(self._run_convert)  # type: ignore[arg-type]
-        self.btn_cancel.clicked.connect(self._cancel)  # type: ignore[arg-type]
 
         self.edit_input.textChanged.connect(self._update_run_state)
         self.chk_recursive.toggled.connect(self._update_run_state)
@@ -1633,7 +1789,7 @@ class MainWindow(QtWidgets.QMainWindow):
         del blocker
         QtWidgets.QMessageBox.warning(
             self,
-            "IconMaker",
+            APP_DISPLAY_NAME,
             "Could not update the Windows startup setting for the tray.",
         )
 
@@ -1654,6 +1810,13 @@ class MainWindow(QtWidgets.QMainWindow):
     def _sync_settings_navigation(self, index: int) -> None:
         self.btn_settings_archive_storage.setChecked(index == 0)
         self.btn_settings_image.setChecked(index == 1)
+        self.btn_settings_themes.setChecked(index == 2)
+
+    def _sync_theme_selection(self, preference: str) -> None:
+        for appearance, button in self.theme_buttons.items():
+            blocker = QtCore.QSignalBlocker(button)
+            button.setChecked(appearance == preference)
+            del blocker
 
     def set_quality_preset(self, preset: str) -> None:
         minimum, maximum = eng.quality_range(preset)
@@ -1776,20 +1939,34 @@ class MainWindow(QtWidgets.QMainWindow):
         self._archive_refresh_worker = None
         self._archive_refresh_thread = None
 
-    def _on_archive_refresh_finished(self, generation: int, snapshots: object) -> None:
+    def _on_archive_refresh_finished(self, generation: int, snapshots: object, watch_paths: object) -> None:
         self._clear_archive_refresh_worker()
         if generation != self._archive_refresh_generation:
             return
 
         try:
             snapshot_list = list(snapshots)
+            signatures = {
+                str(entry.path): (entry.signature_size, entry.signature_mtime)
+                for entry in snapshot_list
+            }
+            previous = self._archive_image_signatures
+            changed_candidates = {
+                path: signature
+                for path, signature in signatures.items()
+                if previous is None or previous.get(path) != signature
+            }
+            self._archive_auto_convert_candidates.update(changed_candidates)
+            if changed_candidates:
+                self._archive_auto_convert_timer.start()
+            self._archive_image_signatures = signatures
             self.archive_sidebar.apply_snapshot(
                 snapshot_list,
                 archive_sources_dir=self.paths.images_dir,
                 archive_icons_dir=self.paths.icons_dir,
             )
             self._set_archive_watch_paths(
-                set(GenOps.build_archive_storage_watch_paths(self.paths))
+                set(watch_paths)
                 | {str(Path(entry.path).parent) for entry in snapshot_list}
             )
             if self.archive_sidebar.current_path() is None:
@@ -1800,6 +1977,37 @@ class MainWindow(QtWidgets.QMainWindow):
 
         if self._archive_refresh_pending:
             self._refresh_archive_view(immediate=True)
+
+    def _begin_watched_image_conversion(self) -> None:
+        if self._archive_refresh_running or self._archive_refresh_pending:
+            self._archive_auto_convert_timer.start()
+            return
+        if self._run_in_progress:
+            self._archive_auto_convert_pending = True
+            return
+
+        self._archive_auto_convert_pending = False
+        candidates = self._archive_auto_convert_candidates
+        self._archive_auto_convert_candidates = {}
+        for path_text, signature in candidates.items():
+            source = Path(path_text)
+            try:
+                source.resolve().relative_to(self.paths.images_dir.resolve())
+                source_stat = source.stat()
+                if (source_stat.st_size, source_stat.st_mtime) != signature:
+                    self._refresh_archive_view()
+                    continue
+                icon = eng.archive_icon_path_for_source_image(source, paths=self.paths)
+                if not icon.exists() or icon.stat().st_mtime_ns < source_stat.st_mtime_ns:
+                    self._run_archive_maintenance_now("watched-image")
+                    return
+            except (OSError, ValueError):
+                continue
+
+    def _start_pending_watched_image_conversion(self) -> None:
+        if self._archive_auto_convert_pending and not self._run_in_progress:
+            self._archive_auto_convert_pending = False
+            self._archive_auto_convert_timer.start(0)
 
     def _on_archive_refresh_failed(self, generation: int, message: str) -> None:
         self._clear_archive_refresh_worker()
@@ -1830,6 +2038,13 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _update_run_state(self) -> None:
         self._update_workflow_actions()
+        if self._run_in_progress:
+            cancellable = self._operation_kind == "conversion"
+            if self._operation_thread is not None:
+                cancellable = cancellable and not self._operation_thread.isInterruptionRequested()
+            self.btn_run.setEnabled(cancellable)
+            return
+
         inp_txt = self.edit_input.text().strip()
 
         if not inp_txt:
@@ -1842,10 +2057,6 @@ class MainWindow(QtWidgets.QMainWindow):
             return
 
         if not (p.is_dir() or _is_image_file(p)):
-            self.btn_run.setEnabled(False)
-            return
-
-        if self._run_in_progress:
             self.btn_run.setEnabled(False)
             return
 
@@ -1923,21 +2134,32 @@ class MainWindow(QtWidgets.QMainWindow):
         source = self._current_source_image_path()
         if source is None:
             return
-        _open_path(str(source))
+        self._open_archive_image(source)
 
-    def _open_sage_url(self) -> None:
-        url = GenOps.load_sage_url(self._settings)
-        if not QtGui.QDesktopServices.openUrl(QtCore.QUrl(url)):
-            QtWidgets.QMessageBox.warning(self, "IconMaker", f"Could not open the Sage ChatGPT link:\n\n{url}")
+    def _open_sage_popup(self) -> None:
+        if IS_WINDOWS:
+            import ctypes
 
-    def _save_sage_url(self) -> None:
-        try:
-            url = GenOps.save_sage_url(self.edit_sage_url.text(), self._settings)
-        except ValueError as exc:
-            QtWidgets.QMessageBox.warning(self, "Sage ChatGPT Link", str(exc))
+            user32 = ctypes.windll.user32
+            user32.FindWindowW.restype = ctypes.c_void_p
+            handle = user32.FindWindowW(None, "IconForge · Image Generation")
+            if handle:
+                user32.ShowWindow(ctypes.c_void_p(handle), 9)
+                user32.SetForegroundWindow(ctypes.c_void_p(handle))
+                return
+        if self._sage_process is not None and self._sage_process.poll() is None:
             return
-        self.edit_sage_url.setText(url)
-        self._log(f"Sage ChatGPT link updated: {url}")
+        if getattr(sys, "frozen", False):
+            command = [sys.executable, "--mode", "generator"]
+            cwd = Path(sys.executable).resolve().parent
+        else:
+            command = [sys.executable, str(APP_DIR / "IconMakerMaster.py"), "--mode", "generator"]
+            cwd = APP_DIR
+        try:
+            self._sage_process = subprocess.Popen(command, cwd=cwd, close_fds=True)
+        except OSError as exc:
+            self._log(f"Image generator could not open: {exc}", "ERR")
+            QtWidgets.QMessageBox.warning(self, APP_DISPLAY_NAME, f"Image generator could not open:\n\n{exc}")
 
     def _open_current_generated_icon(self) -> None:
         icon_path = self._current_generated_icon_path()
@@ -1947,7 +2169,16 @@ class MainWindow(QtWidgets.QMainWindow):
         _open_path(str(icon_path))
 
     def _open_archive_image(self, path: Path) -> None:
-        _open_path(str(path))
+        source = Path(path)
+        if not source.is_file():
+            self._log(f"WARN: Source image is unavailable: {source}", "WARN")
+            return
+        viewer = ArchiveImageViewer(source, self)
+        self._image_viewers.add(viewer)
+        viewer.destroyed.connect(lambda _obj=None: self._image_viewers.discard(viewer))
+        viewer.show()
+        viewer.raise_()
+        viewer.activateWindow()
 
     def _show_archive_image_in_folder(self, path: Path) -> None:
         p = Path(path)
@@ -1980,8 +2211,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _copy_archive_image_path(self, path: Path) -> None:
         p = Path(path)
-        QtWidgets.QApplication.clipboard().setText(str(p))
-        self._log(f"Copied path: {p}")
+        ico = self._archive_icon_path_for_image(p)
+        QtWidgets.QApplication.clipboard().setText(f'Image: {p}\nIcon: "{ico}"')
+        self._log(f"Copied image and icon paths: {p.name}")
 
     def _archive_icon_path_for_image(self, path: Path) -> Path:
         return eng.archive_icon_path_for_source_image(Path(path), paths=self.paths)
@@ -2082,11 +2314,17 @@ class MainWindow(QtWidgets.QMainWindow):
     def _browse_input(self) -> None:
         mode = self.mode_seg.mode()
         if mode == "folder":
-            p = QtWidgets.QFileDialog.getExistingDirectory(self, "Choose Folder", str(self.paths.images_dir))
+            p = QtWidgets.QFileDialog.getExistingDirectory(
+                self, "Choose Folder", str(self.paths.images_dir),
+                options=QtWidgets.QFileDialog.Option.DontUseNativeDialog,
+            )
             if p:
                 self._set_input(p)
         else:
-            p, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Choose Image", str(self.paths.images_dir))
+            p, _ = QtWidgets.QFileDialog.getOpenFileName(
+                self, "Choose Image", str(self.paths.images_dir),
+                options=QtWidgets.QFileDialog.Option.DontUseNativeDialog,
+            )
             if p:
                 self._set_input(p)
 
@@ -2095,7 +2333,8 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         self._log(f"=== MAINTENANCE ({reason}) ===")
         paths = self.paths
-        overwrite = self.chk_overwrite.isChecked()
+        # A changed watched image needs a full pass, including existing icons.
+        overwrite = reason == "watched-image"
         sizes = preset_sizes(self.quality_preset())
         padding_mode = self.cmb_padding.currentText()
         self._start_operation(
@@ -2135,6 +2374,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self,
             "Choose New Archive Storage Location",
             start_dir,
+            options=QtWidgets.QFileDialog.Option.DontUseNativeDialog,
         )
         if not picked:
             return
@@ -2145,7 +2385,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         confirm = QtWidgets.QMessageBox.question(
             self,
-            "IconMaker",
+            APP_DISPLAY_NAME,
             (
                 f"Copy archive storage from:\n{old_root}\n\nSwitch to:\n{new_root}\n\n"
                 "Tray and background activity will pause during relocation."
@@ -2156,7 +2396,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if confirm != QtWidgets.QMessageBox.Yes:
             return
         dlg = QtWidgets.QProgressDialog("Relocating archive storage...", "Cancel", 0, 100, self)
-        dlg.setWindowTitle("IconMaker")
+        dlg.setWindowTitle(APP_DISPLAY_NAME)
         dlg.setWindowModality(QtCore.Qt.WindowModal)
         dlg.show()
 
@@ -2177,7 +2417,7 @@ class MainWindow(QtWidgets.QMainWindow):
         dlg.close()
         if not result.ok:
             self._log(f"Archive storage relocation failed: {result.message}", "ERR")
-            QtWidgets.QMessageBox.critical(self, "IconMaker", f"Relocation failed:\n{result.message}")
+            QtWidgets.QMessageBox.critical(self, APP_DISPLAY_NAME, f"Relocation failed:\n{result.message}")
             return
 
         GenOps.save_archive_storage_root(new_root, self._settings)
@@ -2199,18 +2439,78 @@ class MainWindow(QtWidgets.QMainWindow):
         self._log(f"Archive storage relocated to: {new_root}")
         QtWidgets.QMessageBox.information(
             self,
-            "IconMaker",
+            APP_DISPLAY_NAME,
             f"Archive storage moved to:\n{new_root}\n\nThe old Icon Images folder remains at:\n{old_images_dir}",
         )
+
+    def _animate_visibility(
+        self,
+        widget: QtWidgets.QWidget,
+        effect: QtWidgets.QGraphicsOpacityEffect,
+        animation: QtCore.QPropertyAnimation,
+        show: bool,
+    ) -> None:
+        animation.stop()
+        if show:
+            widget.show()
+        animation.setDuration(240 if show else 450)
+        animation.setStartValue(effect.opacity())
+        animation.setEndValue(1.0 if show else 0.0)
+        animation.start()
+
+    def _finish_visibility_fades(self) -> None:
+        if self._progress_opacity.opacity() <= 0.01 and not self._run_in_progress:
+            self.bar.hide()
+        if self._detail_opacity.opacity() <= 0.01 and not self._run_in_progress:
+            self.result_detail.hide()
+        if (
+            self._completion_display_state == "fading"
+            and self.bar.isHidden()
+        ):
+            self._completion_display_state = "compact"
+
+    def _clear_completion_display(self) -> None:
+        self._completion_idle_timer.stop()
+        self._completion_display_state = "none"
+        self._progress_fade.stop()
+        self._detail_fade.stop()
+        self._progress_opacity.setOpacity(0.0)
+        self._detail_opacity.setOpacity(0.0)
+        self.bar.hide()
+        self.result_detail.hide()
+        self.result_detail.clear()
+
+    def _show_completion(self, status: str, detail: str) -> None:
+        self.status_line.setText(status)
+        self.result_detail.setText(detail)
+        self._completion_display_state = "visible"
+        if detail:
+            self._detail_opacity.setOpacity(0.0)
+            self._animate_visibility(
+                self.result_detail, self._detail_opacity, self._detail_fade, True
+            )
+        self._completion_idle_timer.start()
+
+    def _fade_completed_display(self) -> None:
+        if self._run_in_progress or self._completion_display_state != "visible":
+            return
+        self._completion_display_state = "fading"
+        self._animate_visibility(self.bar, self._progress_opacity, self._progress_fade, False)
 
     def _start_operation(self, kind: str, work: Callable[..., object], status: str) -> None:
         if self._run_in_progress:
             return
+        self._clear_completion_display()
         self._run_in_progress = True
         self._operation_kind = kind
         self._operation_result = None
         self._operation_error = None
+        self._archive_full_pass_running = False
         self.status_line.setText(status)
+        if kind == "conversion":
+            self.bar.setRange(0, 100)
+            self.bar.setValue(0)
+            self._animate_visibility(self.bar, self._progress_opacity, self._progress_fade, True)
         self._set_run_ui_enabled(False)
 
         thread = QtCore.QThread(self)
@@ -2233,6 +2533,10 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_operation_progress(self, done: int, total: int, current: str) -> None:
         self.status_line.setText(current)
         self.bar.setValue(int((done * 100) / max(1, total)))
+        if self._operation_kind == "conversion" and current.startswith("Updating archive:"):
+            self._archive_full_pass_running = True
+            self.btn_run.setText("Updating archive…")
+            self.btn_run.setEnabled(False)
 
     def _on_operation_result(self, result: object) -> None:
         self._operation_result = result
@@ -2241,6 +2545,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._operation_error = message
 
     def _finish_operation(self) -> None:
+        # Keep the PySide wrappers alive until the finished callback returns.
+        # Releasing the worker mid-callback can crash Qt.
+        _finished_refs = (self._operation_thread, self._operation_worker)
         kind = self._operation_kind
         result = self._operation_result
         error = self._operation_error
@@ -2248,27 +2555,45 @@ class MainWindow(QtWidgets.QMainWindow):
         self._operation_worker = None
         self._operation_kind = None
         self._run_in_progress = False
+        self._archive_full_pass_running = False
         self._set_run_ui_enabled(True)
         self._update_run_state()
 
         if error or result is None:
             self._log(f"ERR: {kind} failed: {error or 'No result returned.'}", "ERR")
-            self.status_line.setText(f"ERR: {kind} failed.")
             if kind == "conversion":
-                self.bar.setValue(0)
+                self._show_completion("Failed.", "The conversion could not finish. See the log for details.")
+            else:
+                self.status_line.setText(f"ERR: {kind} failed.")
         elif kind == "conversion":
-            self.status_line.setText(result.message)
             if result.ok:
                 self.bar.setValue(100)
+                self._show_completion("Done.", result.message)
+            elif "cancel" in result.message.casefold():
+                counts = []
+                if result.converted:
+                    counts.append(f"{result.converted} icon{'s' if result.converted != 1 else ''} created.")
+                if result.skipped:
+                    counts.append(f"{result.skipped} file{'s' if result.skipped != 1 else ''} skipped.")
+                if result.failed:
+                    counts.append(f"{result.failed} conversion{'s' if result.failed != 1 else ''} failed.")
+                detail = " ".join(counts) if counts else "Conversion stopped before completion."
+                self._show_completion("Cancelled.", detail)
+            else:
+                status = "Finished with errors." if result.converted or result.skipped else "Failed."
+                self._show_completion(status, result.message.removeprefix("ERR: "))
             if result.converted > 0:
                 self.archive_sidebar.expand()
         elif kind == "maintenance":
             self._log(
                 "Archive maintenance done. "
                 f"scanned={result.scanned} converted={result.converted} "
-                f"orphans_removed={result.orphan_icons_removed}"
+                f"orphans_removed={result.orphan_icons_removed} errors={result.errors}",
+                "ERR" if result.errors else "INFO",
             )
-            self.status_line.setText("Ready.")
+            self.status_line.setText(
+                f"Archive update finished with {result.errors} error(s)." if result.errors else "Ready."
+            )
         elif kind == "startup":
             if (
                 result.converted
@@ -2283,26 +2608,37 @@ class MainWindow(QtWidgets.QMainWindow):
                     f"Converted={result.converted} "
                     f"Deleted={result.deleted_orphans + result.deleted_from_icons}"
                 )
-            self.status_line.setText("Ready.")
+            if result.errors:
+                self._log(f"Archive update incomplete: {result.errors} error(s).", "ERR")
+                self.status_line.setText(f"Archive update incomplete: {result.errors} error(s).")
+            else:
+                self.status_line.setText("Ready.")
 
         if self._close_when_idle:
             QtCore.QTimer.singleShot(0, self.close)
             return
         self._refresh_archive_view(immediate=kind != "conversion")
         self._update_workflow_actions()
+        self._start_pending_watched_image_conversion()
 
     def _cancel(self) -> None:
-        if self._operation_kind != "conversion" or self._operation_thread is None:
+        if self._operation_kind != "conversion" or self._operation_thread is None or self._archive_full_pass_running:
             return
         if self._operation_thread.isInterruptionRequested():
             return
         self._operation_thread.requestInterruption()
-        self.btn_cancel.setEnabled(False)
+        self.btn_run.setText("Cancelling…")
+        self.btn_run.setEnabled(False)
+        self.status_line.setText("Cancelling…")
         self._log("Cancel requested.", "WARN")
 
     def _set_run_ui_enabled(self, enabled: bool) -> None:
         has_input = bool(self.edit_input.text().strip())
-        self.btn_run.setEnabled(enabled and has_input)
+        can_cancel = not enabled and self._operation_kind == "conversion"
+        self.btn_run.setText("Cancel" if can_cancel else "Run")
+        self.btn_run.setProperty("cancelMode", can_cancel)
+        _repolish(self.btn_run)
+        self.btn_run.setEnabled(can_cancel or (enabled and has_input))
         self.edit_input.setEnabled(enabled)
         self.btn_browse_input.setEnabled(enabled)
         self.mode_seg.setEnabled(enabled)
@@ -2314,10 +2650,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.archive_sidebar.setEnabled(enabled)
         self.btn_change_archive_storage.setEnabled(enabled)
         self.btn_settings_exit.setEnabled(enabled)
-        self.btn_cancel.setEnabled(not enabled and self._operation_kind == "conversion")
 
     def _run_convert(self) -> None:
         if self._run_in_progress:
+            if self._operation_kind == "conversion":
+                self._cancel()
             return
 
         inp_txt = self.edit_input.text().strip()
@@ -2329,8 +2666,6 @@ class MainWindow(QtWidgets.QMainWindow):
         if not inp.exists():
             self._log("ERR: Input path does not exist.", "ERR")
             return
-
-        self.bar.setValue(0)
 
         sizes = preset_sizes(self.quality_preset())
 
@@ -2423,10 +2758,15 @@ class MainWindow(QtWidgets.QMainWindow):
     def closeEvent(self, event) -> None:
         if self._run_in_progress:
             self._close_when_idle = True
-            if self._operation_kind == "conversion":
+            if self._operation_kind == "conversion" and not self._archive_full_pass_running:
                 self._cancel()
+            elif self._archive_full_pass_running:
+                self.status_line.setText("Finishing archive update before closing…")
             event.ignore()
             return
+        self._completion_idle_timer.stop()
+        self._progress_fade.stop()
+        self._detail_fade.stop()
         if hasattr(self, "state"):
             self.state.flush_pending_save(self)
         try:
@@ -2437,6 +2777,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._archive_refresh_timer.stop()
         except Exception:
             pass
+        self._archive_auto_convert_timer.stop()
         try:
             if self._archive_refresh_thread is not None:
                 self._archive_refresh_thread.requestInterruption()
@@ -2451,16 +2792,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
 
 def main() -> None:
-    _pre_app_setup()
+    from StartupSplash import run_ui as run_ui_with_splash
 
-    app = QtWidgets.QApplication(sys.argv)
-    apply_qt_application_identity(app)
-    app.setWindowIcon(get_app_icon())
-
-    w = MainWindow()
-    w.show()
-
-    sys.exit(app.exec())
+    run_ui_with_splash(sys.modules[__name__])
 
 if __name__ == "__main__":
     main()

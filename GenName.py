@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import tempfile
 import unicodedata
 from pathlib import Path
 from typing import Callable, Optional, Tuple
@@ -26,9 +27,11 @@ LogFn = Optional[Callable[[str], None]]
 _BAD_PATTERN = re.compile(r'[<>:"/\\|?*]')
 
 WINDOWS_RESERVED = {
-    "con", "prn", "aux", "nul",
+    "con", "prn", "aux", "nul", "conin$", "conout$",
     *(f"com{i}" for i in range(1, 10)),
     *(f"lpt{i}" for i in range(1, 10)),
+    *(f"com{i}" for i in "¹²³"),
+    *(f"lpt{i}" for i in "¹²³"),
 }
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".tif", ".svg"}
@@ -85,6 +88,32 @@ def canonical_filename(name: str) -> str:
 def canonical_key(name: str) -> str:
     return canonical_filename(name)
 
+
+def validate_image_stem(stem: str, *, suffix: str = ".png") -> str:
+    """Validate an edited image name without changing the user's wording."""
+    if not isinstance(stem, str) or not stem or not stem.strip():
+        raise ValueError("Enter a name for the image.")
+    if stem.endswith((" ", ".")):
+        raise ValueError("Image names cannot end with a space or period.")
+    if _BAD_PATTERN.search(stem) or any(ord(char) < 32 for char in stem):
+        raise ValueError('Image names cannot contain < > : " / \\ | ? * or control characters.')
+    if stem.split(".", 1)[0].casefold() in WINDOWS_RESERVED:
+        raise ValueError("That image name is reserved by Windows. Choose another name.")
+    if len(stem) + len(suffix) > MAX_NAME_LEN:
+        raise ValueError(f"Image names must be {MAX_NAME_LEN - len(suffix)} characters or fewer.")
+    return stem
+
+
+def validate_archive_image_filename(name: str) -> str:
+    """Accept a safe image filename, preserving its case, spaces, and Unicode."""
+    if not isinstance(name, str) or not name or Path(name).name != name:
+        raise ValueError("Enter a valid image filename.")
+    suffix = Path(name).suffix
+    if suffix.lower() not in IMAGE_EXTS:
+        raise ValueError("Choose a supported image filename extension.")
+    validate_image_stem(name[: -len(suffix)], suffix=suffix)
+    return name
+
 # =========================
 # Helpers
 # =========================
@@ -137,6 +166,32 @@ def _atomic_copy(src: Path, dst: Path):
     os.replace(tmp, dst)
 
 
+def _atomic_copy_without_overwrite(src: Path, dst: Path):
+    """Stage a copy beside the target, then publish it only if absent."""
+    fd, temp_name = tempfile.mkstemp(prefix=f".{dst.name}.", suffix=".tmp", dir=dst.parent)
+    os.close(fd)
+    try:
+        shutil.copy2(src, temp_name)
+        try:
+            os.link(temp_name, dst)
+        except FileExistsError:
+            raise
+        except OSError:
+            # Some configured archive volumes do not support hard links.
+            created = False
+            try:
+                with open(temp_name, "rb") as source, open(dst, "xb") as target:
+                    created = True
+                    shutil.copyfileobj(source, target)
+                shutil.copystat(temp_name, dst)
+            except Exception:
+                if created:
+                    dst.unlink(missing_ok=True)
+                raise
+    finally:
+        Path(temp_name).unlink(missing_ok=True)
+
+
 def _atomic_move(src: Path, dst: Path):
     dst.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -157,6 +212,7 @@ def copy_into_archive_storage_strict(
     archive_dir: Path,
     *,
     logfn: LogFn = None,
+    target_name: str | None = None,
 ) -> Tuple[Optional[Path], Optional[str]]:
 
     src = Path(src)
@@ -165,9 +221,15 @@ def copy_into_archive_storage_strict(
     if not src.exists() or not _is_image(src):
         return None, None
 
+    if target_name is not None:
+        target_name = validate_archive_image_filename(target_name)
     archive_dir.mkdir(parents=True, exist_ok=True)
 
-    dst = archive_dir / canonical_filename(src.name)
+    dst = archive_dir / (target_name if target_name is not None else canonical_filename(src.name))
+
+    if target_name is not None and dst.exists():
+        _log(logfn, f"COLLISION: {src.name} -> {dst.name}")
+        return dst, "collision"
 
     if dst.exists() and not _same_file(src, dst):
         if _is_identical(src, dst):
@@ -178,9 +240,18 @@ def copy_into_archive_storage_strict(
         return dst, "collision"
 
     try:
-        _atomic_copy(src, dst)
+        if target_name is None:
+            _atomic_copy(src, dst)
+        else:
+            _atomic_copy_without_overwrite(src, dst)
         _log(logfn, f"COPY: {src.name} -> {dst.name}")
         return dst, None
+    except FileExistsError:
+        if target_name is not None:
+            return dst, "collision"
+        if _is_identical(src, dst):
+            return dst, None
+        return dst, "collision"
     except Exception as e:
         _log(logfn, f"ERR: copy failed {src} -> {dst}: {e}")
         return None, None

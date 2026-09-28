@@ -9,6 +9,7 @@ Supports modes:
     --mode both (default)
     --mode ui
     --mode tray
+    --mode generator
 
 Top-level responsibilities in this file:
 - choose UI-only, tray-only, or combined launch mode
@@ -32,6 +33,7 @@ from typing import Final, Optional
 import GenLog
 from AppIdentity import (
     APP_COPYRIGHT,
+    APP_DISPLAY_NAME,
     APP_NAME,
     APP_ORG,
     APP_VERSION,
@@ -51,6 +53,7 @@ def _log(message: str, *, level: str = "info") -> None:
 
 TRAY_MUTEX_NAME: Final[str] = "Global\\IconMakerTrayMutex"
 UI_MUTEX_NAME: Final[str] = "Global\\IconMakerUiMutex"
+GENERATOR_MUTEX_NAME: Final[str] = "Global\\IconMakerGeneratorMutex"
 
 
 _RUNTIME_PATCHED = False
@@ -58,6 +61,7 @@ _CAIRO_PATCHED = False
 _QT_PATCHED = False
 _TRAY_MUTEX_HANDLE: Optional[int] = None
 _UI_MUTEX_HANDLE: Optional[int] = None
+_GENERATOR_MUTEX_HANDLE: Optional[int] = None
 
 
 def _patch_cairo_dll_path() -> None:
@@ -136,11 +140,11 @@ def parse_mode(argv: list[str]) -> str:
     for i, arg in enumerate(argv):
         if arg.startswith("--mode="):
             mode = arg.split("=", 1)[1].lower().strip()
-            if mode in {"both", "ui", "tray"}:
+            if mode in {"both", "ui", "tray", "generator"}:
                 return mode
         if arg == "--mode" and i + 1 < len(argv):
             mode = argv[i + 1].lower().strip()
-            if mode in {"both", "ui", "tray"}:
+            if mode in {"both", "ui", "tray", "generator"}:
                 return mode
     return "both"
 
@@ -189,7 +193,7 @@ def write_crash_log(exc: BaseException, *, mode: str) -> Path | None:
     log_path = log_dir / f"crash_{timestamp}_{mode}.log"
 
     lines = [
-        f"App: {APP_NAME}",
+        f"App: {APP_DISPLAY_NAME}",
         f"Version: {APP_VERSION}",
         f"Organization: {APP_ORG}",
         f"Mode: {mode}",
@@ -213,7 +217,7 @@ def write_crash_log(exc: BaseException, *, mode: str) -> Path | None:
         return None
 
 
-def show_fatal_error(message: str, *, title: str = APP_NAME) -> None:
+def show_fatal_error(message: str, *, title: str = APP_DISPLAY_NAME) -> None:
     """Show a fatal error dialog without assuming the main UI is already running."""
     try:
         from PySide6 import QtWidgets
@@ -244,11 +248,11 @@ def run_with_crash_logging(fn, *, mode: str, show_ui_error: bool) -> None:
         if show_ui_error:
             if log_path is not None:
                 msg = (
-                    f"{APP_NAME} {APP_VERSION} crashed.\n\n"
+                    f"{APP_DISPLAY_NAME} {APP_VERSION} crashed.\n\n"
                     f"A crash log was written to:\n{log_path}"
                 )
             else:
-                msg = f"{APP_NAME} {APP_VERSION} crashed and the crash log could not be written."
+                msg = f"{APP_DISPLAY_NAME} {APP_VERSION} crashed and the crash log could not be written."
             show_fatal_error(msg)
         raise
 
@@ -338,6 +342,19 @@ def acquire_ui_mutex() -> bool:
     return True
 
 
+def acquire_generator_mutex() -> bool:
+    """Keep one browser profile owner per desktop session."""
+    global _GENERATOR_MUTEX_HANDLE
+
+    if _GENERATOR_MUTEX_HANDLE:
+        return True
+    handle = _acquire_named_mutex(GENERATOR_MUTEX_NAME)
+    if handle is None:
+        return False
+    _GENERATOR_MUTEX_HANDLE = handle
+    return True
+
+
 DETACHED_PROCESS = 0x00000008
 CREATE_NEW_PROCESS_GROUP = 0x00000200
 
@@ -373,9 +390,9 @@ def run_ui() -> None:
     """Boot the main application window."""
     def launch() -> None:
         _prepare_runtime()
-        from Gen1 import main as gen1_main
+        from StartupSplash import run_ui as run_ui_with_splash
 
-        gen1_main()
+        run_ui_with_splash()
 
     run_with_crash_logging(launch, mode="ui", show_ui_error=True)
 
@@ -391,9 +408,30 @@ def run_tray() -> None:
     run_with_crash_logging(launch, mode="tray", show_ui_error=False)
 
 
+def run_generator() -> None:
+    """Run embedded image sites away from the main UI process."""
+    def launch() -> None:
+        _prepare_runtime()
+        flags = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "")
+        existing_flags = {part.split("=", 1)[0] for part in flags.split()}
+        for flag in (
+            "--disable-gpu",
+            "--disable-accelerated-video-encode",
+            "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+        ):
+            if flag.split("=", 1)[0] not in existing_flags:
+                flags = f"{flags} {flag}".strip()
+        os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = flags
+        from ImageSiteHub import main as generator_main
+
+        generator_main()
+
+    run_with_crash_logging(launch, mode="generator", show_ui_error=True)
+
+
 def _show_already_running_ui_message() -> None:
     _log('ui launch blocked: already running', level='warning')
-    show_fatal_error(f"{APP_NAME} is already running.", title=APP_NAME)
+    show_fatal_error(f"{APP_DISPLAY_NAME} is already running.")
 
 
 def main() -> None:
@@ -405,6 +443,13 @@ def main() -> None:
             _log('tray launch blocked: already running', level='warning')
             return
         run_tray()
+        return
+
+    if mode == "generator":
+        if not acquire_generator_mutex():
+            _log("generator launch blocked: already running", level="warning")
+            return
+        run_generator()
         return
 
     if mode == "ui":

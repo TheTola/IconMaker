@@ -14,6 +14,7 @@ from typing import Callable, Optional
 
 from PySide6 import QtCore, QtWidgets
 
+import Gen2 as eng
 import GenOps
 
 
@@ -148,6 +149,7 @@ class StateMemory:
         recursive = bool(self.settings.value(self.k.last_recursive, False, type=bool))
         overwrite = bool(self.settings.value(self.k.last_overwrite, True, type=bool))
         padding = str(self.settings.value(self.k.last_padding, "") or "").strip()
+        restored_padding = eng.normalize_padding_mode(padding)
         quality = str(self.settings.value(self.k.last_quality, "16-256") or "16-256").strip()
 
         input_edit = self._require_attr(widget, "edit_input")
@@ -194,10 +196,12 @@ class StateMemory:
             self._warn("restoring overwrite flag failed", exc)
 
         try:
-            if padding:
-                index = cmb_padding.findText(padding)
-                if index >= 0:
-                    cmb_padding.setCurrentIndex(index)
+            index = cmb_padding.findText(restored_padding)
+            if index >= 0:
+                cmb_padding.setCurrentIndex(index)
+            if padding and padding != restored_padding:
+                self.settings.setValue(self.k.last_padding, restored_padding)
+                self.settings.sync()
         except Exception as exc:
             self._warn("restoring padding failed", exc)
 
@@ -242,7 +246,7 @@ class StateMemory:
             self._warn("saving overwrite flag failed", exc)
 
         try:
-            self.settings.setValue(self.k.last_padding, str(cmb_padding.currentText()).strip())
+            self.settings.setValue(self.k.last_padding, eng.normalize_padding_mode(cmb_padding.currentText()))
         except Exception as exc:
             self._warn("saving padding failed", exc)
 

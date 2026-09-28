@@ -1,6 +1,6 @@
 ﻿#!/usr/bin/env python3
 """
-Background tray worker for IconMaker.
+Background tray worker for IconForge.
 
 Gen3 watches configured folders and managed archive storage, mirrors incoming
 images into archive storage when needed, runs unattended maintenance, and
@@ -17,11 +17,13 @@ from pathlib import Path
 from typing import Iterable, List
 
 from PySide6 import QtCore, QtGui, QtWidgets
+from AppTheme import theme_manager
 
 import Gen2 as eng
 import GenLog
 import GenOps
 from AppIdentity import (
+    APP_DISPLAY_NAME,
     APP_DISPLAY_VERSION,
     APP_EXECUTABLE_NAME,
     APP_NAME,
@@ -139,6 +141,7 @@ class ScanResult:
     mirrored_into_archive: int
     moved_from_icons: int
     deleted_from_icons: int
+    errors: int = 0
 
 
 class TrayScanWorker(QtCore.QObject):
@@ -155,8 +158,12 @@ class TrayScanWorker(QtCore.QObject):
             self.failed.emit(f"{type(exc).__name__}: {exc}")
 
 
-def scan_and_convert(*, autocrop: bool = False, padding_mode: str = "balanced") -> ScanResult:
+def scan_and_convert(*, autocrop: bool = False, padding_mode: str | None = None) -> ScanResult:
     paths = _current_engine_paths()
+    settings = _qsettings()
+    selected_padding = eng.normalize_padding_mode(
+        padding_mode if padding_mode is not None else settings.value("last_padding", "None")
+    )
     archive_sources_dir = paths.images_dir
     generated_icons_dir = paths.icons_dir
     try:
@@ -189,16 +196,37 @@ def scan_and_convert(*, autocrop: bool = False, padding_mode: str = "balanced") 
         except Exception as exc:
             _log(f"Watch scan error: {watch_root} ({type(exc).__name__}: {exc})", level="error")
 
+    selected_sizes = eng.quality_preset_sizes(str(settings.value("last_quality", "16-256") or "16-256"))
     report = eng.scan_archive_sources_and_convert(
         paths=paths,
-        sizes=eng.quality_preset_sizes(str(_qsettings().value("last_quality", "16-256") or "16-256")),
+        sizes=selected_sizes,
         overwrite=False,
         autocrop=autocrop,
-        padding_mode=padding_mode,
+        padding_mode=selected_padding,
         remove_orphans=True,
         orphan_action="delete",
         logfn=_log,
     )
+    archive_errors = report.errors
+    if report.converted:
+        try:
+            full_report = GenOps.full_archive_conversion_pass(
+                paths=paths,
+                sizes=selected_sizes,
+                padding_mode=selected_padding,
+                autocrop=autocrop,
+                logfn=_log,
+            )
+        except Exception as exc:
+            archive_errors += 1
+            _log(f"Full archive conversion failed: {type(exc).__name__}: {exc}", level="error")
+        else:
+            archive_errors += full_report.errors
+            _log(
+                f"Full archive conversion: scanned={full_report.scanned} "
+                f"converted={full_report.converted} errors={full_report.errors}",
+                level="error" if full_report.errors else "info",
+            )
     if (
         promoted
         or cleanup.moved_images
@@ -220,6 +248,7 @@ def scan_and_convert(*, autocrop: bool = False, padding_mode: str = "balanced") 
         mirrored,
         cleanup.moved_images,
         cleanup.deleted_files,
+        archive_errors,
     )
 
 
@@ -243,11 +272,12 @@ class TrayAgent(QtWidgets.QSystemTrayIcon):
         self._scan_error: str | None = None
         self._quit_requested = False
         self._last_seen_event_seq = 0
+        self._last_requested_storage_root = _current_engine_paths().storage_root
         self.menu = QtWidgets.QMenu()
-        self.menu.addAction("Open IconMaker", self.open_gen1)
+        self.menu.addAction(f"Open {APP_DISPLAY_NAME}", self.open_gen1)
         self.menu.addSeparator()
         self.menu.addAction("Scan Now", self._scan_now)
-        self.menu.addAction("Quit IconMaker", self._quit_all)
+        self.menu.addAction(f"Quit {APP_DISPLAY_NAME}", self._quit_all)
         self.setContextMenu(self.menu)
         self.activated.connect(self._on_click)
         self._debounce = QtCore.QTimer(self)
@@ -333,9 +363,17 @@ class TrayAgent(QtWidgets.QSystemTrayIcon):
         self._scan_busy = False
         if error:
             _log(f"Scan failure: {error}", level="error")
+            self.showMessage(APP_DISPLAY_NAME, f"Archive scan failed: {error}", QtWidgets.QSystemTrayIcon.Warning, 4000)
         elif result is not None:
             self._attach_watch(self._scan_watch_paths)
-        if (
+        if result is not None and result.errors:
+            self.showMessage(
+                APP_DISPLAY_NAME,
+                f"Archive update incomplete: {result.errors} error(s). See the log.",
+                QtWidgets.QSystemTrayIcon.Warning,
+                4000,
+            )
+        elif (
             result is not None
             and (
                 result.converted
@@ -346,7 +384,7 @@ class TrayAgent(QtWidgets.QSystemTrayIcon):
             )
         ):
             self.showMessage(
-                "IconMaker",
+                APP_DISPLAY_NAME,
                 f"Imported: {result.mirrored_into_archive + result.moved_from_icons}   "
                 f"Converted: {result.converted}   "
                 f"Deleted: {result.deleted_orphans + result.deleted_from_icons}",
@@ -387,6 +425,11 @@ class TrayAgent(QtWidgets.QSystemTrayIcon):
             app.quit()
 
     def _poll_app_events(self, force: bool = False) -> None:
+        current_root = _current_engine_paths().storage_root
+        root_changed = current_root != self._last_requested_storage_root
+        if root_changed:
+            self._last_requested_storage_root = current_root
+            self._scan_now()
         event = GenOps.latest_app_event()
         if not force and event.seq <= self._last_seen_event_seq:
             return
@@ -394,7 +437,9 @@ class TrayAgent(QtWidgets.QSystemTrayIcon):
         if not force and event.event_type == "quit-all":
             self._request_quit()
             return
-        if not force and event.event_type in {"archive-storage-relocated", "archive-storage-resumed"}:
+        if not force and not root_changed and event.event_type in {
+            "archive-storage-root-chosen", "archive-storage-relocated", "archive-storage-resumed"
+        }:
             self._scan_now()
 
     def _run_detached(self, argv: List[str]) -> bool:
@@ -437,6 +482,7 @@ def main() -> None:
     GenOps.reconcile_image_copies(paths=_current_engine_paths(), on_start_or_close=True, logfn=_log)
     app = QtWidgets.QApplication(sys.argv)
     apply_qt_application_identity(app)
+    theme_manager()
     app.setQuitOnLastWindowClosed(False)
     app.setWindowIcon(get_app_icon())
     if not QtWidgets.QSystemTrayIcon.isSystemTrayAvailable():

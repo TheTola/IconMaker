@@ -12,13 +12,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from PIL import Image
 from PySide6 import QtCore, QtGui, QtWidgets
 
 import Gen2 as eng
+from AppTheme import theme_color, theme_css, theme_manager
 
-COLLAPSED_WIDTH = 32
+COLLAPSED_WIDTH = 44
 EXPANDED_WIDTH = 528
-PREVIEW_SIZE = 256
+PREVIEW_SIZE = 184
 THUMB_SIZE = 68
 GRID_COLUMNS = 3
 
@@ -30,6 +32,45 @@ def _repolish(widget: QtWidgets.QWidget) -> None:
         widget.update()
     except Exception:
         widget.update()
+
+
+def _confirm_delete_image(parent: QtWidgets.QWidget, path: Path) -> bool:
+    dialog = QtWidgets.QMessageBox(parent)
+    dialog.setWindowTitle("Delete Image")
+    dialog.setIcon(QtWidgets.QMessageBox.Warning)
+    dialog.setText("Are you sure you want to delete this image?")
+    dialog.setInformativeText(Path(path).name)
+    cancel_button = dialog.addButton("Cancel", QtWidgets.QMessageBox.RejectRole)
+    delete_button = dialog.addButton("Delete Image", QtWidgets.QMessageBox.DestructiveRole)
+    dialog.setDefaultButton(cancel_button)
+    dialog.setEscapeButton(cancel_button)
+    dialog.exec()
+    return dialog.clickedButton() is delete_button
+
+
+def _icon_sizes_text(path_text: str | None) -> str:
+    if not path_text or path_text == "Unavailable":
+        return "Unavailable"
+    path = Path(path_text)
+    if not path.is_file():
+        return "Not generated"
+    try:
+        with Image.open(path) as icon:
+            if icon.format != "ICO":
+                return "Unavailable"
+            dimensions = set(icon.ico.sizes())
+    except Exception:
+        return "Unavailable"
+    if not dimensions:
+        return "Unavailable"
+    # Older ICOs can include extra intermediate frames; the standard range is complete.
+    standard_sizes = (8, 16, 24, 32, 48, 64, 96, 128, 256)
+    if {(size, size) for size in standard_sizes}.issubset(dimensions):
+        return "All"
+    return ", ".join(
+        str(width) if width == height else f"{width}×{height}"
+        for width, height in sorted(dimensions)
+    )
 
 
 @dataclass(slots=True)
@@ -45,6 +86,7 @@ class ArchiveEntrySnapshot:
     file_size_text: str | None = None
     image_path_text: str | None = None
     icon_path_text: str | None = None
+    icon_sizes_text: str | None = None
     created_text: str | None = None
     modified_text: str | None = None
     thumb_image: QtGui.QImage | None = None
@@ -56,7 +98,7 @@ class ArchiveHandleLabel(QtWidgets.QLabel):
     def __init__(self, text: str = "", parent=None):
         super().__init__("", parent)
         self.setAlignment(QtCore.Qt.AlignCenter)
-        self.setAttribute(QtCore.Qt.WA_StyledBackground, True)
+        self.setCursor(QtCore.Qt.PointingHandCursor)
         self._word = self._normalize_word(text)
         self._expanded = False
 
@@ -74,10 +116,7 @@ class ArchiveHandleLabel(QtWidgets.QLabel):
         self.update()
 
     def sizeHint(self):
-        fm = self.fontMetrics()
-        line_height = fm.height()
-        min_width = fm.horizontalAdvance("<") + fm.horizontalAdvance("W") + 16
-        return QtCore.QSize(max(COLLAPSED_WIDTH, min_width), line_height * len(self._word) + 16)
+        return QtCore.QSize(COLLAPSED_WIDTH, 168)
 
     def minimumSizeHint(self):
         return self.sizeHint()
@@ -92,36 +131,44 @@ class ArchiveHandleLabel(QtWidgets.QLabel):
         painter.setRenderHint(QtGui.QPainter.Antialiasing)
         painter.setRenderHint(QtGui.QPainter.TextAntialiasing)
 
-        option = QtWidgets.QStyleOption()
-        option.initFrom(self)
-        self.style().drawPrimitive(QtWidgets.QStyle.PE_Widget, option, painter, self)
+        rail = QtCore.QRectF(3.5, 8.5, self.width() - 7, self.height() - 17)
+        gradient = QtGui.QLinearGradient(rail.topLeft(), rail.bottomRight())
+        gradient.setColorAt(0, theme_color("#192e48"))
+        gradient.setColorAt(0.6, theme_color("#12243d"))
+        gradient.setColorAt(1, theme_color("#0b172a"))
+        painter.setBrush(gradient)
+        painter.setPen(QtGui.QPen(QtGui.QColor(75, 164, 203, 110), 1))
+        painter.drawRoundedRect(rail, 11, 11)
 
         font = painter.font()
-        font.setBold(True)
+        font.setPointSize(9)
+        font.setWeight(QtGui.QFont.DemiBold)
+        font.setLetterSpacing(QtGui.QFont.AbsoluteSpacing, 1.4)
         painter.setFont(font)
-        painter.setPen(QtGui.QColor(234, 242, 255, 220))
+        word_center = self.height() / 2
+        arrow_y = word_center
+        arrow_x = self.width() - 12
+        direction = -1 if self._expanded else 1
+        chevron = QtGui.QPainterPath(QtCore.QPointF(arrow_x - direction * 3, arrow_y - 5))
+        chevron.lineTo(arrow_x + direction * 3, arrow_y)
+        chevron.lineTo(arrow_x - direction * 3, arrow_y + 5)
+        painter.setBrush(QtCore.Qt.NoBrush)
+        chevron_pen = QtGui.QPen(theme_color("#8bdff0"), 1.8)
+        chevron_pen.setCapStyle(QtCore.Qt.RoundCap)
+        chevron_pen.setJoinStyle(QtCore.Qt.RoundJoin)
+        painter.setPen(chevron_pen)
+        painter.drawPath(chevron)
 
-        letters = list(self._word)
-        if not letters:
-            return
-
-        fm = painter.fontMetrics()
-        line_height = fm.height()
-        total_height = len(letters) * line_height
-        top = max(6, (self.height() - total_height) // 2)
-        arrow = "<" if self._expanded else ">"
-        arrow_width = max(10, self.width() // 3)
-        letter_width = max(12, self.width() - arrow_width - 2)
-        middle_index = len(letters) // 2
-
-        for index, letter in enumerate(letters):
-            y = top + (index * line_height)
-            row_rect = QtCore.QRect(0, y, self.width(), line_height)
-            letter_rect = QtCore.QRect(self.width() - letter_width - 2, y, letter_width, line_height)
-            if index == middle_index:
-                arrow_rect = QtCore.QRect(0, y, arrow_width, line_height)
-                painter.drawText(arrow_rect, QtCore.Qt.AlignCenter, arrow)
-            painter.drawText(letter_rect, QtCore.Qt.AlignCenter, letter)
+        painter.save()
+        painter.setPen(theme_color("#d8e9f4"))
+        painter.translate(16, word_center)
+        painter.rotate(-90)
+        painter.drawText(
+            QtCore.QRect(-72, -12, 144, 24),
+            QtCore.Qt.AlignCenter,
+            self._word.title(),
+        )
+        painter.restore()
 
 
 class ArchivePreviewLabel(QtWidgets.QLabel):
@@ -236,11 +283,21 @@ class ArchivePropertiesWindow(QtWidgets.QDialog):
 
         grid = QtWidgets.QGridLayout()
         grid.setContentsMargins(0, 0, 0, 0)
-        grid.setHorizontalSpacing(6)
-        grid.setVerticalSpacing(6)
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(8)
         grid.setColumnStretch(0, 0)
         grid.setColumnStretch(1, 1)
-        layout.addLayout(grid, 1)
+        self.scroll = QtWidgets.QScrollArea()
+        self.scroll.setObjectName("ArchivePropertiesScroll")
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        self.scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        self.scroll.viewport().setStyleSheet("background: transparent;")
+        scroll_body = QtWidgets.QWidget()
+        scroll_body.setObjectName("ArchivePropertiesBody")
+        scroll_body.setLayout(grid)
+        self.scroll.setWidget(scroll_body)
+        layout.addWidget(self.scroll, 1)
         self._grid = grid
 
         self._property_labels: List[QtWidgets.QLabel] = []
@@ -248,6 +305,7 @@ class ArchivePropertiesWindow(QtWidgets.QDialog):
         property_rows = [
             ("Name:", "name"),
             ("Image Size:", "image_size"),
+            ("Sizes:", "icon_sizes"),
             ("File Type:", "file_type"),
             ("File Size:", "file_size"),
             ("Image Path:", "image_path"),
@@ -273,75 +331,95 @@ class ArchivePropertiesWindow(QtWidgets.QDialog):
             self._property_labels.append(label)
             self._values[key] = value
 
-        self.setStyleSheet(
-            """
+        self._theme_style = """
             QDialog#ArchivePropertiesWindow {
                 background: transparent;
             }
             QFrame#ArchivePropertiesChrome {
-                background-color: #09101f;
-                border: 1px solid rgba(255, 255, 255, 0.10);
-                border-radius: 14px;
+                background-color: #0b1323;
+                border: 1px solid rgba(75, 164, 203, 0.30);
+                border-radius: 10px;
             }
             QFrame#ArchivePropertiesTitleBar {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 rgba(10, 16, 34, 0.96),
-                    stop:0.55 rgba(11, 19, 52, 0.96),
-                    stop:1 rgba(31, 9, 46, 0.96));
-                border-top-left-radius: 13px;
-                border-top-right-radius: 13px;
-                border-bottom: 1px solid rgba(255,255,255,0.08);
+                    stop:0 #172943, stop:0.55 #102039, stop:1 #111a2d);
+                border-top-left-radius: 9px;
+                border-top-right-radius: 9px;
+                border-bottom: 1px solid rgba(83,171,212,0.42);
             }
             QLabel#ArchivePropertiesTitle {
-                color: rgba(234, 242, 255, 0.95);
-                font-size: 11px;
-                font-weight: 800;
+                color: #edf7ff;
+                font-size: 12px;
+                font-weight: 600;
             }
             QToolButton#ArchivePropertiesCloseButton {
-                border-radius: 8px;
+                border-radius: 6px;
                 border: 1px solid rgba(255,255,255,0.08);
-                background: rgba(255,255,255,0.05);
-                color: rgba(234,242,255,235);
+                background: rgba(255,255,255,0.04);
+                color: #d4deed;
                 font-size: 12px;
-                font-weight: 900;
             }
             QToolButton#ArchivePropertiesCloseButton:hover {
-                border-color: rgba(255,92,92,0.65);
-                background: rgba(255,92,92,0.18);
+                border-color: rgba(54,201,232,0.55);
+                background: rgba(54,201,232,0.10);
             }
             QFrame#ArchivePropertiesCard {
-                background-color: #101a31;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #132138, stop:1 #0d1729);
                 border: 0;
-                border-bottom-left-radius: 13px;
-                border-bottom-right-radius: 13px;
+                border-bottom-left-radius: 9px;
+                border-bottom-right-radius: 9px;
             }
             QLabel#ArchivePropertiesHeading {
-                color: rgba(255, 255, 255, 0.95);
+                color: #b7d9ec;
                 font-size: 14px;
-                font-weight: 800;
+                font-weight: 600;
                 padding-bottom: 2px;
             }
             QLabel#ArchivePropertyLabel {
-                color: rgba(234, 242, 255, 0.70);
+                color: #8fb7cf;
                 font-size: 11px;
-                font-weight: 700;
+                font-weight: 500;
                 padding-top: 1px;
             }
             QLabel#ArchivePropertyValue {
-                color: rgba(255, 255, 255, 0.94);
+                color: #e8eef8;
                 font-size: 11px;
                 background: transparent;
             }
+            QScrollArea#ArchivePropertiesScroll {
+                background: transparent;
+                border: 0;
+            }
+            QWidget#ArchivePropertiesBody {
+                background: transparent;
+            }
+            QScrollBar:vertical {
+                background: transparent;
+                width: 7px;
+            }
+            QScrollBar::handle:vertical {
+                background: rgba(153, 169, 191, 0.45);
+                border-radius: 3px;
+                min-height: 24px;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0;
+            }
             """
-        )
+        self._apply_theme()
+        theme_manager().changed.connect(self._apply_theme)
         self._refresh_layout_metrics()
-        self.setFixedHeight(320)
+
+    def _apply_theme(self, *_args) -> None:
+        self.setStyleSheet(theme_css(self._theme_style))
 
     def set_entry(self, entry: ArchiveEntrySnapshot | None) -> None:
         if entry is None:
             placeholders = {
                 "name": "No archive item selected",
                 "image_size": "Unavailable",
+                "icon_sizes": "Unavailable",
                 "file_type": "Unavailable",
                 "file_size": "Unavailable",
                 "image_path": "Select an archive item to inspect it.",
@@ -351,11 +429,13 @@ class ArchivePropertiesWindow(QtWidgets.QDialog):
             }
             for key, value in placeholders.items():
                 self._values[key].setText(value)
+            self._refresh_layout_metrics()
             return
 
         values = {
             "name": entry.name or entry.path.name,
             "image_size": entry.image_size_text or "Unavailable",
+            "icon_sizes": entry.icon_sizes_text or "Unavailable",
             "file_type": entry.file_type_text or "Unavailable",
             "file_size": entry.file_size_text or "Unavailable",
             "image_path": entry.image_path_text or str(entry.path),
@@ -370,7 +450,7 @@ class ArchivePropertiesWindow(QtWidgets.QDialog):
     def _refresh_layout_metrics(self) -> None:
         label_width = max((label.sizeHint().width() for label in self._property_labels), default=92)
         label_width = max(104, label_width + 6)
-        value_width = 252
+        value_width = 352
         self._grid.setColumnMinimumWidth(0, label_width)
         self._grid.setColumnMinimumWidth(1, value_width)
         for label in self._property_labels:
@@ -392,7 +472,24 @@ class ArchivePropertiesWindow(QtWidgets.QDialog):
             + spacing
             + value_width
         )
-        self.setFixedWidth(max(430, total_width))
+        self.setFixedWidth(max(500, total_width))
+
+        rows_height = 0
+        for label, value in zip(self._property_labels, self._values.values()):
+            text_height = value.fontMetrics().boundingRect(
+                QtCore.QRect(0, 0, value_width, 10000),
+                QtCore.Qt.TextWordWrap,
+                value.text(),
+            ).height()
+            rows_height += max(label.sizeHint().height(), text_height)
+        rows_height += self._grid.verticalSpacing() * (len(self._property_labels) - 1)
+
+        heading = self.findChild(QtWidgets.QLabel, "ArchivePropertiesHeading")
+        heading_height = heading.sizeHint().height() if heading is not None else 24
+        desired_height = 30 + card_margins.top() + card_margins.bottom() + heading_height + 8 + rows_height + 10
+        screen = self.screen() or QtWidgets.QApplication.primaryScreen()
+        max_height = max(340, screen.availableGeometry().height() - 80) if screen else 640
+        self.setFixedHeight(min(max(340, desired_height), max_height))
 
 
 class ArchiveItem(QtWidgets.QFrame):
@@ -418,18 +515,20 @@ class ArchiveItem(QtWidgets.QFrame):
         self.setAttribute(QtCore.Qt.WA_Hover, True)
 
         layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(6, 6, 6, 6)
-        layout.setSpacing(6)
+        layout.setContentsMargins(7, 7, 7, 7)
+        layout.setSpacing(4)
+        self.setFixedHeight(136)
 
         self.thumb = QtWidgets.QLabel()
         self.thumb.setAlignment(QtCore.Qt.AlignCenter)
-        self.thumb.setMinimumHeight(THUMB_SIZE + 10)
+        self.thumb.setFixedHeight(78)
         self.thumb.setPixmap(pixmap)
         self.thumb.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
 
         self.name = QtWidgets.QLabel(self.path.stem)
-        self.name.setAlignment(QtCore.Qt.AlignCenter)
+        self.name.setAlignment(QtCore.Qt.AlignHCenter | QtCore.Qt.AlignTop)
         self.name.setWordWrap(True)
+        self.name.setFixedHeight(40)
         self.name.setObjectName("ArchiveItemName")
         self.name.setToolTip(str(self.path))
         self.name.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
@@ -438,6 +537,7 @@ class ArchiveItem(QtWidgets.QFrame):
         layout.addWidget(self.name)
 
         self._apply_style()
+        theme_manager().changed.connect(self._apply_style)
 
     def update_content(self, path: Path, *, pixmap: QtGui.QPixmap | None = None) -> None:
         self.path = Path(path)
@@ -452,29 +552,32 @@ class ArchiveItem(QtWidgets.QFrame):
         self._selected = selected
         self._apply_style()
 
-    def _apply_style(self) -> None:
+    def _apply_style(self, *_args) -> None:
         if self._selected:
-            self.setStyleSheet(
+            self.setStyleSheet(theme_css(
                 "QFrame#ArchiveItem {"
-                "border: 1px solid rgba(255, 191, 4, 220);"
-                "border-radius: 10px;"
-                "background: rgba(255, 191, 4, 36);"
+                "border: 1px solid #d8ad51;"
+                "border-radius: 8px;"
+                "background: qlineargradient(x1:0, y1:0, x2:1, y2:1,"
+                "stop:0 #1c314b, stop:1 #14233b);"
                 "}"
-                "QLabel { background: transparent; color: rgba(255,255,255,230); }"
-            )
+                "QLabel { background: transparent; color: #e8eef8; font-size: 11px; }"
+            ))
         else:
-            self.setStyleSheet(
+            self.setStyleSheet(theme_css(
                 "QFrame#ArchiveItem {"
-                "border: 1px solid rgba(255, 255, 255, 26);"
-                "border-radius: 10px;"
-                "background: rgba(255, 255, 255, 10);"
+                "border: 1px solid rgba(90, 150, 186, 0.24);"
+                "border-radius: 8px;"
+                "background: qlineargradient(x1:0, y1:0, x2:1, y2:1,"
+                "stop:0 #17263b, stop:1 #111d31);"
                 "}"
                 "QFrame#ArchiveItem:hover {"
-                "border: 1px solid rgba(0, 220, 255, 120);"
-                "background: rgba(0, 220, 255, 18);"
+                "border: 1px solid rgba(54, 201, 232, 0.62);"
+                "background: qlineargradient(x1:0, y1:0, x2:1, y2:1,"
+                "stop:0 #203b56, stop:1 #162943);"
                 "}"
-                "QLabel { background: transparent; color: rgba(234,242,255,210); }"
-            )
+                "QLabel { background: transparent; color: #c9d6e7; font-size: 11px; }"
+            ))
 
     def mousePressEvent(self, event):
         if event.button() == QtCore.Qt.LeftButton:
@@ -482,59 +585,97 @@ class ArchiveItem(QtWidgets.QFrame):
         super().mousePressEvent(event)
 
     def mouseDoubleClickEvent(self, event):
-        # Archive cards are selection targets. Opening the source image is
-        # reserved for the preview pane to avoid accidental file launches.
-        event.accept()
+        if event.button() == QtCore.Qt.LeftButton:
+            self.openRequested.emit(self.path)
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
 
     def contextMenuEvent(self, event):
-        self.clicked.emit(self.path)
+        path = self.path
+        self.clicked.emit(path)
 
         menu = QtWidgets.QMenu(self)
+        menu.setObjectName("ArchiveContextMenu")
+        menu.setWindowFlag(QtCore.Qt.FramelessWindowHint)
+        menu.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
+        menu.setAttribute(QtCore.Qt.WA_StyledBackground, True)
+        menu.setStyleSheet(theme_css("""
+            QMenu#ArchiveContextMenu {
+                background-color: rgba(9, 19, 35, 220);
+                border: 1px solid rgba(112, 185, 217, 180);
+                border-radius: 9px;
+                padding: 6px;
+                color: #eaf4fc;
+            }
+            QMenu#ArchiveContextMenu::item {
+                background: transparent;
+                border: 1px solid transparent;
+                border-radius: 5px;
+                color: #eaf4fc;
+                padding: 7px 20px 7px 13px;
+                margin: 1px 0;
+            }
+            QMenu#ArchiveContextMenu::item:selected {
+                background-color: rgba(42, 98, 126, 242);
+                border-color: rgba(103, 212, 239, 195);
+                color: #ffffff;
+            }
+            QMenu#ArchiveContextMenu::separator {
+                height: 1px;
+                background-color: rgba(131, 176, 199, 120);
+                margin: 5px 10px;
+            }
+        """))
         open_action = menu.addAction("Open Image")
         show_in_folder_action = menu.addAction("Show in Folder")
         menu.addSeparator()
+        copy_image_action = menu.addAction("Copy Image")
+        copy_icon_action = menu.addAction("Copy Icon")
+        copy_path_action = menu.addAction("Copy Path")
+        menu.addSeparator()
         duplicate_action = menu.addAction("Duplicate")
         rename_action = menu.addAction("Rename")
-        delete_action = menu.addAction("Delete Image")
         menu.addSeparator()
-        copy_image_action = menu.addAction("Copy Image")
-        copy_path_action = menu.addAction("Copy Path")
-        copy_icon_action = menu.addAction("Copy Icon")
+        delete_action = menu.addAction("Delete Image")
+        delete_icon = QtGui.QPixmap(16, 16)
+        delete_icon.fill(QtCore.Qt.transparent)
+        painter = QtGui.QPainter(delete_icon)
+        painter.setRenderHint(QtGui.QPainter.Antialiasing)
+        painter.setPen(QtGui.QPen(QtGui.QColor("#ff6b76"), 1.6))
+        painter.drawLine(3, 5, 13, 5)
+        painter.drawLine(6, 3, 10, 3)
+        painter.drawRoundedRect(QtCore.QRectF(5, 6, 6, 8), 1, 1)
+        painter.end()
+        delete_action.setIcon(QtGui.QIcon(delete_icon))
 
         chosen = menu.exec(event.globalPos())
         if chosen is None:
             return
         if chosen == open_action:
-            self.openRequested.emit(self.path)
+            self.openRequested.emit(path)
             return
         if chosen == show_in_folder_action:
-            self.showInFolderRequested.emit(self.path)
+            self.showInFolderRequested.emit(path)
             return
         if chosen == duplicate_action:
-            self.duplicateRequested.emit(self.path)
+            self.duplicateRequested.emit(path)
             return
         if chosen == rename_action:
-            self.renameRequested.emit(self.path)
+            self.renameRequested.emit(path)
             return
         if chosen == copy_image_action:
-            self.copyImageRequested.emit(self.path)
+            self.copyImageRequested.emit(path)
             return
         if chosen == copy_path_action:
-            self.copyPathRequested.emit(self.path)
+            self.copyPathRequested.emit(path)
             return
         if chosen == copy_icon_action:
-            self.copyIconRequested.emit(self.path)
+            self.copyIconRequested.emit(path)
             return
         if chosen == delete_action:
-            answer = QtWidgets.QMessageBox.question(
-                self,
-                "Delete Image",
-                f"Delete this image?\n\n{self.path.name}",
-                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
-                QtWidgets.QMessageBox.No,
-            )
-            if answer == QtWidgets.QMessageBox.Yes:
-                self.deleteRequested.emit(self.path)
+            if _confirm_delete_image(self, path):
+                self.deleteRequested.emit(path)
 
 
 class ArchiveSidebar(QtWidgets.QFrame):
@@ -584,19 +725,29 @@ class ArchiveSidebar(QtWidgets.QFrame):
             self._width_anim.addAnimation(anim)
         self._width_anim.finished.connect(self._sync_content_visibility)
         self._apply_surface_style()
+        theme_manager().changed.connect(self._theme_changed)
         self._update_preview()
+
+    def _theme_changed(self, *_args) -> None:
+        self._apply_surface_style()
+        self.handle.update()
 
     def _build_ui(self) -> None:
         root = QtWidgets.QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
+        self.panel_host = QtWidgets.QWidget()
+        self.panel_host.setVisible(False)
+        host_layout = QtWidgets.QVBoxLayout(self.panel_host)
+        host_layout.setContentsMargins(4, 8, 8, 8)
+
         self.panel = QtWidgets.QFrame()
         self.panel.setObjectName("ArchivePanel")
-        self.panel.setVisible(False)
+        host_layout.addWidget(self.panel)
         panel_layout = QtWidgets.QVBoxLayout(self.panel)
-        panel_layout.setContentsMargins(14, 14, 14, 14)
-        panel_layout.setSpacing(10)
+        panel_layout.setContentsMargins(12, 14, 12, 12)
+        panel_layout.setSpacing(12)
 
         header_row = QtWidgets.QHBoxLayout()
         header_row.setContentsMargins(0, 0, 0, 0)
@@ -610,118 +761,192 @@ class ArchiveSidebar(QtWidgets.QFrame):
         self.count_label.setObjectName("ArchiveCount")
         header_row.addWidget(self.count_label, 0, QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
 
-        self.btn_properties = QtWidgets.QPushButton("Properties")
-        self.btn_properties.setObjectName("ArchivePropertiesButton")
-        self.btn_properties.setCursor(QtCore.Qt.PointingHandCursor)
-        self.btn_properties.setEnabled(False)
-        self.btn_properties.setFixedHeight(36)
-        self.btn_properties.setMinimumWidth(96)
-        self.btn_properties.clicked.connect(self._open_properties_window)
-        header_row.addWidget(self.btn_properties, 0, QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        header_rule = QtWidgets.QFrame()
+        header_rule.setObjectName("ArchiveHeaderRule")
+        header_rule.setFixedHeight(1)
+        panel_layout.addWidget(header_rule)
 
         self.preview_frame = ArchivePreviewFrame()
         self.preview_frame.setObjectName("ArchivePreview")
-        self.preview_frame.setFixedHeight(PREVIEW_SIZE + 18)
+        self.preview_frame.setFixedHeight(54)
         self.preview_frame.doubleClicked.connect(self._open_preview_image)
-        preview_layout = QtWidgets.QVBoxLayout(self.preview_frame)
-        preview_layout.setContentsMargins(8, 8, 8, 8)
-        preview_layout.setSpacing(0)
+        preview_layout = QtWidgets.QHBoxLayout(self.preview_frame)
+        preview_layout.setContentsMargins(9, 9, 9, 9)
+        preview_layout.setSpacing(12)
 
         self.preview_label = ArchivePreviewLabel()
         self.preview_label.setAlignment(QtCore.Qt.AlignCenter)
         self.preview_label.setFixedSize(PREVIEW_SIZE, PREVIEW_SIZE)
-        self.preview_label.setWordWrap(True)
         self.preview_label.doubleClicked.connect(self._open_preview_image)
-        preview_layout.addWidget(self.preview_label, 0, QtCore.Qt.AlignCenter)
-        panel_layout.addWidget(self.preview_frame)
+        preview_layout.addWidget(self.preview_label, 0, QtCore.Qt.AlignVCenter)
 
-        self.selection_name = QtWidgets.QLabel("No archive item selected")
+        self.selection_details = QtWidgets.QWidget()
+        details_layout = QtWidgets.QVBoxLayout(self.selection_details)
+        details_layout.setContentsMargins(0, 2, 0, 0)
+        details_layout.setSpacing(6)
+
+        self.selection_name = QtWidgets.QLabel()
         self.selection_name.setObjectName("ArchiveSelectionName")
         self.selection_name.setWordWrap(True)
-        panel_layout.addWidget(self.selection_name)
+        self.selection_name.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignTop)
+        self.selection_name.setMaximumHeight(42)
+        details_layout.addWidget(self.selection_name)
+
+        self.selection_dimensions = QtWidgets.QLabel()
+        self.selection_dimensions.setObjectName("ArchiveSelectionMeta")
+        details_layout.addWidget(self.selection_dimensions)
+
+        self.selection_sizes = QtWidgets.QLabel()
+        self.selection_sizes.setObjectName("ArchiveSelectionMeta")
+        self.selection_sizes.setWordWrap(True)
+        details_layout.addWidget(self.selection_sizes)
+
+        self.selection_file = QtWidgets.QLabel()
+        self.selection_file.setObjectName("ArchiveSelectionMeta")
+        details_layout.addWidget(self.selection_file)
+
+        self.selection_modified = QtWidgets.QLabel()
+        self.selection_modified.setObjectName("ArchiveSelectionMeta")
+        self.selection_modified.setWordWrap(True)
+        details_layout.addWidget(self.selection_modified)
+        details_layout.addStretch(1)
+
+        self.btn_properties = QtWidgets.QPushButton("Properties")
+        self.btn_properties.setObjectName("ArchivePropertiesButton")
+        self.btn_properties.setCursor(QtCore.Qt.PointingHandCursor)
+        self.btn_properties.setEnabled(False)
+        self.btn_properties.setFixedHeight(30)
+        self.btn_properties.clicked.connect(self._open_properties_window)
+        details_layout.addWidget(self.btn_properties, 0, QtCore.Qt.AlignLeft)
+        preview_layout.addWidget(self.selection_details, 1)
+
+        self.preview_hint = QtWidgets.QLabel("Select an image to preview it")
+        self.preview_hint.setObjectName("ArchivePreviewHint")
+        self.preview_hint.setAlignment(QtCore.Qt.AlignVCenter | QtCore.Qt.AlignLeft)
+        preview_layout.addWidget(self.preview_hint, 1)
+        panel_layout.addWidget(self.preview_frame)
 
         self.scroll = QtWidgets.QScrollArea()
+        self.scroll.setObjectName("ArchiveGridScroll")
         self.scroll.setWidgetResizable(True)
         self.scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
         self.scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        self.scroll.viewport().setStyleSheet("background: transparent;")
         panel_layout.addWidget(self.scroll, 1)
 
         self.container = QtWidgets.QWidget()
+        self.container.setObjectName("ArchiveGridContainer")
         self.grid = QtWidgets.QGridLayout(self.container)
         self.grid.setSpacing(8)
         self.grid.setContentsMargins(0, 0, 0, 0)
+        self.grid.setAlignment(QtCore.Qt.AlignTop)
         for column in range(GRID_COLUMNS):
             self.grid.setColumnStretch(column, 1)
         self.scroll.setWidget(self.container)
         self.scroll.viewport().installEventFilter(self)
 
         self.empty_state = QtWidgets.QLabel("Archive is empty.\nDrop files or folders here to import stored source images.")
+        self.empty_state.setObjectName("ArchiveEmptyState")
         self.empty_state.setAlignment(QtCore.Qt.AlignCenter)
         self.empty_state.setWordWrap(True)
         self.grid.addWidget(self.empty_state, 0, 0, 1, GRID_COLUMNS)
 
         self.handle = ArchiveHandleLabel("Archive")
         self.handle.setFixedWidth(COLLAPSED_WIDTH)
-        self.handle.setStyleSheet(
-            "font-weight: 900;"
-            "color: rgba(234,242,255,220);"
-            "background: rgba(8,12,24,0.92);"
-            "border-right: 1px solid rgba(255,255,255,0.08);"
-        )
+        self.handle.setToolTip("Open Archive")
         self.handle.clicked.connect(self.toggle)
 
         root.addWidget(self.handle)
-        root.addWidget(self.panel, 1)
+        root.addWidget(self.panel_host, 1)
 
     def _apply_surface_style(self) -> None:
-        border = "rgba(255, 191, 4, 0.55)" if self._drop_active else "rgba(255,255,255,0.08)"
-        preview_border = "rgba(255, 191, 4, 0.62)" if self._drop_active else "rgba(255,255,255,0.16)"
-        self.panel.setStyleSheet(
+        border = "rgba(54,201,232,0.75)" if self._drop_active else "rgba(75,164,203,0.28)"
+        preview_border = "rgba(54,201,232,0.75)" if self._drop_active else "rgba(95,160,192,0.32)"
+        self.panel.setStyleSheet(theme_css(
             f"""
             QFrame#ArchivePanel {{
-                border-radius: 18px;
-                background-color: rgba(12, 17, 34, 0.86);
+                border-radius: 10px;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #141e35, stop:0.42 #0f1930, stop:1 #0b1427);
                 border: 1px solid {border};
             }}
             QFrame#ArchivePreview {{
-                border-radius: 16px;
-                background-color: rgba(4, 7, 14, 0.92);
-                border: 1px dashed {preview_border};
+                border-radius: 8px;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #172b44, stop:1 #101b30);
+                border: 1px solid {preview_border};
             }}
             QLabel#ArchiveTitle {{
-                color: rgba(255,255,255,235);
-                font-size: 18px;
-                font-weight: 900;
+                color: #edf7ff;
+                font-size: 17px;
+                font-weight: 600;
             }}
             QLabel#ArchiveCount {{
-                color: rgba(234,242,255,180);
+                color: #a5c3d7;
                 font-size: 11px;
-                font-weight: 700;
+            }}
+            QFrame#ArchiveHeaderRule {{
+                border: 0;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 rgba(83,171,212,0.66),
+                    stop:0.34 rgba(83,171,212,0.30),
+                    stop:1 rgba(83,171,212,0.04));
             }}
             QLabel#ArchiveSelectionName {{
-                color: rgba(255,255,255,230);
-                font-weight: 800;
+                color: #e8eef8;
+                font-size: 12px;
+                font-weight: 600;
+            }}
+            QLabel#ArchiveSelectionMeta {{
+                color: #a5c3d7;
+                font-size: 11px;
+            }}
+            QLabel#ArchivePreviewHint {{
+                color: #99a9bf;
+                font-size: 12px;
             }}
             QPushButton#ArchivePropertiesButton {{
-                min-height: 36px;
-                padding: 0 12px 2px 12px;
-                border-radius: 10px;
-                border: 1px solid rgba(255, 255, 255, 0.12);
-                background-color: rgba(255, 255, 255, 0.08);
-                color: rgba(255,255,255,235);
-                font-size: 12px;
-                font-weight: 700;
+                padding: 0 12px;
+                border-radius: 6px;
+                border: 1px solid rgba(92, 154, 190, 0.34);
+                background-color: rgba(39, 72, 106, 0.38);
+                color: #d4deed;
+                font-size: 11px;
+                font-weight: 500;
             }}
             QPushButton#ArchivePropertiesButton:hover:enabled {{
-                background-color: rgba(255, 191, 4, 0.18);
-                border: 1px solid rgba(255, 191, 4, 0.40);
+                background-color: rgba(54, 201, 232, 0.16);
+                border: 1px solid rgba(54, 201, 232, 0.64);
             }}
             QPushButton#ArchivePropertiesButton:disabled {{
-                color: rgba(234,242,255,120);
-                background-color: rgba(255, 255, 255, 0.04);
+                color: #75849a;
+            }}
+            QScrollArea#ArchiveGridScroll {{
+                background: transparent;
+                border: 0;
+            }}
+            QWidget#ArchiveGridContainer {{
+                background: transparent;
+            }}
+            QLabel#ArchiveEmptyState {{
+                color: #99a9bf;
+                font-size: 12px;
+                background: transparent;
+            }}
+            QScrollBar:vertical {{
+                background: transparent;
+                width: 7px;
+            }}
+            QScrollBar::handle:vertical {{
+                background: rgba(153, 169, 191, 0.45);
+                border-radius: 3px;
+                min-height: 24px;
+            }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+                height: 0;
             }}
             """
-        )
+        ))
         _repolish(self.panel)
 
     def _set_drop_active(self, active: bool) -> None:
@@ -735,7 +960,7 @@ class ArchiveSidebar(QtWidgets.QFrame):
 
     def expand(self) -> None:
         self._open = True
-        self.panel.setVisible(True)
+        self.panel_host.setVisible(True)
         self._update_handle()
         self._animate_width(EXPANDED_WIDTH)
 
@@ -748,7 +973,7 @@ class ArchiveSidebar(QtWidgets.QFrame):
         return self._open
 
     def _sync_content_visibility(self) -> None:
-        self.panel.setVisible(self._open)
+        self.panel_host.setVisible(self._open)
         target = EXPANDED_WIDTH if self._open else COLLAPSED_WIDTH
         self.setMinimumWidth(target)
         self.setMaximumWidth(target)
@@ -757,6 +982,7 @@ class ArchiveSidebar(QtWidgets.QFrame):
 
     def _update_handle(self) -> None:
         self.handle.set_expanded(self._open)
+        self.handle.setToolTip("Close Archive" if self._open else "Open Archive")
 
     def _animate_width(self, target: int) -> None:
         current = max(self.width(), self.minimumWidth())
@@ -975,10 +1201,14 @@ class ArchiveSidebar(QtWidgets.QFrame):
         return QtGui.QPixmap.fromImage(entry.thumb_image)
 
     def _scaled_preview(self, path: Path) -> Optional[QtGui.QPixmap]:
-        pixmap = QtGui.QPixmap(str(path))
-        if pixmap.isNull():
+        reader = QtGui.QImageReader(str(path))
+        source_size = reader.size()
+        if source_size.isValid():
+            reader.setScaledSize(source_size.scaled(PREVIEW_SIZE, PREVIEW_SIZE, QtCore.Qt.KeepAspectRatio))
+        image = reader.read()
+        if image.isNull():
             return None
-        return pixmap.scaled(
+        return QtGui.QPixmap.fromImage(image).scaled(
             PREVIEW_SIZE,
             PREVIEW_SIZE,
             QtCore.Qt.KeepAspectRatio,
@@ -994,6 +1224,7 @@ class ArchiveSidebar(QtWidgets.QFrame):
         entry = self.current_entry()
         if entry is None:
             return
+        self._refresh_icon_details(entry)
         window = self._ensure_properties_window()
         window.set_entry(entry)
         if not window.isVisible():
@@ -1008,23 +1239,34 @@ class ArchiveSidebar(QtWidgets.QFrame):
             return
         self._properties_window.set_entry(self.current_entry())
 
+    def _refresh_icon_details(self, entry: ArchiveEntrySnapshot) -> None:
+        entry.icon_path_text = self._icon_path_for_image(entry.path)
+        entry.icon_sizes_text = _icon_sizes_text(entry.icon_path_text)
+
     def _update_preview(self) -> None:
-        # The preview is the only place where double-click opens the source
-        # image. Archive cards remain selection and management targets only.
+        # The preview and archive cards open the full-resolution source image.
         current = self.current_path()
         entry = self.current_entry()
         self.btn_properties.setEnabled(entry is not None)
         if current is None:
             self.preview_label.setPixmap(QtGui.QPixmap())
-            self.preview_label.setText("No archive item selected")
             self.preview_label.setCursor(QtCore.Qt.ArrowCursor)
             self.preview_label.setToolTip("")
             self.preview_frame.setCursor(QtCore.Qt.ArrowCursor)
             self.preview_frame.setToolTip("")
-            self.selection_name.setText("No archive item selected")
+            self.preview_label.hide()
+            self.selection_details.hide()
+            self.preview_hint.show()
+            self.preview_frame.setFixedHeight(54)
             self._sync_properties_window()
             return
 
+        self.preview_hint.hide()
+        self.preview_label.show()
+        self.selection_details.show()
+        if entry is not None:
+            self._refresh_icon_details(entry)
+        self.preview_frame.setFixedHeight(PREVIEW_SIZE + 18)
         preview = self._scaled_preview(current)
         if preview is None:
             self.preview_label.setPixmap(QtGui.QPixmap())
@@ -1038,6 +1280,18 @@ class ArchiveSidebar(QtWidgets.QFrame):
         self.preview_frame.setToolTip("Double-click to open the source image")
 
         self.selection_name.setText(current.name)
+        self.selection_name.setToolTip(str(current))
+        self.selection_dimensions.setText(
+            f"Dimensions  {(entry.image_size_text if entry else None) or 'Unavailable'}"
+        )
+        self.selection_sizes.setText(f"Sizes: {(entry.icon_sizes_text if entry else None) or 'Unavailable'}")
+        self.selection_file.setText(
+            f"{(entry.file_type_text if entry else None) or 'Unknown type'}  ·  "
+            f"{(entry.file_size_text if entry else None) or 'Unknown size'}"
+        )
+        self.selection_modified.setText(
+            f"Modified  {(entry.modified_text if entry else None) or 'Unavailable'}"
+        )
         self._sync_properties_window()
 
     def _open_preview_image(self) -> None:
@@ -1066,14 +1320,7 @@ class ArchiveSidebar(QtWidgets.QFrame):
                 event.accept()
                 return
             if event.key() == QtCore.Qt.Key_Delete:
-                answer = QtWidgets.QMessageBox.question(
-                    self,
-                    "Delete Image",
-                    f"Delete this image?\n\n{current.name}",
-                    QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
-                    QtWidgets.QMessageBox.No,
-                )
-                if answer == QtWidgets.QMessageBox.Yes:
+                if _confirm_delete_image(self, current):
                     self.deleteRequested.emit(current)
                 event.accept()
                 return

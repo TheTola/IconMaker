@@ -17,12 +17,12 @@ VSVersionInfo(
           '040904B0',
           [
             StringStruct('CompanyName', 'InfiniWorks'),
-            StringStruct('FileDescription', 'IconMaker'),
+            StringStruct('FileDescription', 'IconForge'),
             StringStruct('FileVersion', '1.0.1'),
             StringStruct('InternalName', 'IconMaker'),
             StringStruct('LegalCopyright', 'InfiniWorks'),
             StringStruct('OriginalFilename', 'IconMaker.exe'),
-            StringStruct('ProductName', 'IconMaker'),
+            StringStruct('ProductName', 'IconForge'),
             StringStruct('ProductVersion', '1.0.1'),
           ]
         )

@@ -14,11 +14,15 @@ archive storage safe, portable, and predictable.
 from __future__ import annotations
 
 import argparse
+import filecmp
+import hashlib
 import json
 import math
 import os
 import re
 import tempfile
+import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
@@ -31,6 +35,7 @@ from GenName import (
     move_within_archive_storage_strict,
     canonical_key,
     sanitize_piece,
+    validate_archive_image_filename,
 )
 
 
@@ -69,6 +74,7 @@ __all__ = [
     "DEFAULT_ARCHIVE_STORAGE_ROOT",
     "DEFAULT_OUTPUT_DIR",
     "PADDING_PRESETS",
+    "normalize_padding_mode",
     "EnginePaths",
     "default_engine_paths",
     "resolve_engine_paths",
@@ -100,11 +106,13 @@ __all__ = [
 IMAGE_EXTS: set[str] = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".tif", ".svg"}
 _COPY_STEM = re.compile(r"^(.+?) - copy(?: \(((?:[2-9]|[1-9]\d+))\))?$", re.IGNORECASE)
 
-DEFAULT_SIZES: List[int] = [16, 24, 32, 48, 64, 128, 256]
-QUALITY_SIZES = (8, 16, 24, 32, 48, 64, 96, 128, 256)
+QUALITY_SIZES = tuple(sorted(
+    {8, 16, 24, 32, 48, 64, 96, 128, 256} | {20, 30, 36, 40, 60, 72, 80}
+))
+DEFAULT_SIZES: List[int] = [size for size in QUALITY_SIZES if size >= 16]
 ICO_MAX_SIZE = 256
 ICON_WRITE_TEMP_PREFIX = ".iconmaker-"
-AUTO_FULL_SIZES: List[int] = list(range(8, 1025, 8))
+AUTO_FULL_SIZES: List[int] = list(range(8, ICO_MAX_SIZE + 1, 8))
 DEFAULT_ARCHIVE_STORAGE_ROOT = Path.home() / "Desktop"
 
 # These aliases keep older call sites working while newer code relies on
@@ -168,10 +176,29 @@ ensure_archive_storage_dirs(default_engine_paths())
 DEFAULT_OUTPUT_DIR = str(default_engine_paths().icons_dir)
 
 PADDING_PRESETS = {
-    "tight": 0.96,
-    "balanced": 0.88,
-    "extra": 0.80,
+    "None": 1.0,
+    "Minor": 0.88,
+    "Extra": 0.80,
 }
+_PADDING_ALIASES = {
+    "none": "None",
+    "tight": "None",
+    "minor": "Minor",
+    "balanced": "Minor",
+    "extra": "Extra",
+}
+
+
+def normalize_padding_mode(value: str | None) -> str:
+    """Return the current padding label, including legacy saved choices."""
+    return _PADDING_ALIASES.get(str(value or "").strip().casefold(), "None")
+
+
+def _parse_padding_mode(value: str) -> str:
+    choice = str(value).strip().casefold()
+    if choice not in _PADDING_ALIASES:
+        raise argparse.ArgumentTypeError("padding must be None, Minor, or Extra")
+    return _PADDING_ALIASES[choice]
 # Progress callbacks describe work without coupling the engine to any
 # particular UI, tray, or logging surface.
 ProgressCB = Callable[[str, int, int, Optional[Path]], None]
@@ -374,7 +401,7 @@ def parse_sizes(s: str) -> List[int]:
             continue
         try:
             n = int(part)
-            if 8 <= n <= 1024:
+            if 8 <= n <= ICO_MAX_SIZE:
                 out.append(n)
         except Exception:
             pass
@@ -386,7 +413,7 @@ def _normalize_sizes(sizes: Sequence[int]) -> List[int]:
     for n in sizes:
         try:
             n2 = int(n)
-            if 8 <= n2 <= 1024:
+            if 8 <= n2 <= ICO_MAX_SIZE:
                 out.append(n2)
         except Exception:
             pass
@@ -412,8 +439,7 @@ def quality_preset_sizes(preset: str) -> List[int]:
 
 
 def _normalize_ico_sizes(sizes: Sequence[int] | None) -> List[int]:
-    requested = _normalize_sizes(DEFAULT_SIZES if sizes is None else sizes)
-    return [size for size in requested if size <= ICO_MAX_SIZE]
+    return _normalize_sizes(DEFAULT_SIZES if sizes is None else sizes)
 
 
 def diagnose_image_discovery(input_path: Path, recursive: bool) -> ImageDiscoveryReport:
@@ -530,10 +556,14 @@ def unique_path(p: Path) -> Path:
 # Image loading: raster + svg
 # =========================
 
-def _load_svg_to_rgba(svg_path: Path) -> Image.Image:
+def _load_svg_to_rgba(svg_path: Path, output_size: tuple[int, int] | None = None) -> Image.Image:
     try:
         import cairosvg
-        png_bytes = cairosvg.svg2png(url=str(svg_path))
+        options = (
+            {"output_width": output_size[0], "output_height": output_size[1]}
+            if output_size else {}
+        )
+        png_bytes = cairosvg.svg2png(url=str(svg_path), **options)
         im = Image.open(BytesIO(png_bytes))
         return im.convert("RGBA")
     except Exception as cairo_error:
@@ -543,16 +573,19 @@ def _load_svg_to_rgba(svg_path: Path) -> Image.Image:
             renderer = QtSvg.QSvgRenderer(str(svg_path))
             if not renderer.isValid():
                 raise ValueError("Invalid SVG")
-            size = renderer.defaultSize()
-            width, height = size.width(), size.height()
-            if width <= 0 or height <= 0:
-                view_box = renderer.viewBoxF()
-                width, height = view_box.width(), view_box.height()
-            if width <= 0 or height <= 0:
-                width = height = 256
-            scale = 256 / max(width, height)
-            width = max(1, round(width * scale))
-            height = max(1, round(height * scale))
+            if output_size is None:
+                size = renderer.defaultSize()
+                width, height = size.width(), size.height()
+                if width <= 0 or height <= 0:
+                    view_box = renderer.viewBoxF()
+                    width, height = view_box.width(), view_box.height()
+                if width <= 0 or height <= 0:
+                    width = height = 256
+                scale = 256 / max(width, height)
+                width = max(1, round(width * scale))
+                height = max(1, round(height * scale))
+            else:
+                width, height = output_size
 
             image = QtGui.QImage(width, height, QtGui.QImage.Format.Format_ARGB32)
             image.fill(QtCore.Qt.GlobalColor.transparent)
@@ -593,6 +626,113 @@ def _autocrop_alpha(im: Image.Image) -> Image.Image:
     if not bbox:
         return im
     return im.crop(bbox)
+
+
+def _svg_intrinsic_size(svg_path: Path) -> tuple[int, int]:
+    try:
+        from PySide6 import QtSvg
+
+        renderer = QtSvg.QSvgRenderer(str(svg_path))
+        if renderer.isValid():
+            size = renderer.defaultSize()
+            if size.width() > 0 and size.height() > 0:
+                return size.width(), size.height()
+            view_box = renderer.viewBoxF()
+            if view_box.width() > 0 and view_box.height() > 0:
+                return max(1, round(view_box.width())), max(1, round(view_box.height()))
+    except Exception:
+        pass
+    return _load_svg_to_rgba(svg_path).size
+
+
+def _render_sparse_svg_frame(
+    svg_path: Path,
+    size: int,
+    reference_size: tuple[int, int],
+    bounds: tuple[int, int, int, int],
+    *,
+    content_scale: float,
+    keep_alpha: bool,
+) -> Image.Image:
+    from PySide6 import QtCore, QtGui, QtSvg
+
+    renderer = QtSvg.QSvgRenderer(str(svg_path))
+    if not renderer.isValid():
+        raise ValueError("Invalid SVG")
+    content_side = max(bounds[2] - bounds[0], bounds[3] - bounds[1])
+    sampled_content_side = max(64, size * 4)
+    canvas_side = math.ceil(sampled_content_side / content_scale)
+    scale = sampled_content_side / content_side
+    image = QtGui.QImage(canvas_side, canvas_side, QtGui.QImage.Format.Format_ARGB32)
+    image.fill(QtCore.Qt.GlobalColor.transparent)
+    painter = QtGui.QPainter(image)
+    try:
+        renderer.render(
+            painter,
+            QtCore.QRectF(
+                (canvas_side - (bounds[2] - bounds[0]) * scale) / 2 - bounds[0] * scale,
+                (canvas_side - (bounds[3] - bounds[1]) * scale) / 2 - bounds[1] * scale,
+                reference_size[0] * scale,
+                reference_size[1] * scale,
+            ),
+        )
+    finally:
+        painter.end()
+    buffer = QtCore.QBuffer()
+    if not buffer.open(QtCore.QIODevice.OpenModeFlag.WriteOnly) or not image.save(buffer, "PNG"):
+        raise RuntimeError("Could not encode rendered SVG")
+    frame = Image.open(BytesIO(bytes(buffer.data()))).convert("RGBA")
+    if not keep_alpha:
+        frame = frame.convert("RGB")
+    return frame.resize((size, size), Image.LANCZOS)
+
+
+def _svg_frames(
+    svg_path: Path, sizes: Sequence[int], *, content_scale: float, keep_alpha: bool
+) -> List[Image.Image]:
+    source_width, source_height = _svg_intrinsic_size(svg_path)
+    reference_side = 1024
+    reference_size = (
+        max(1, round(source_width * reference_side / max(source_width, source_height))),
+        max(1, round(source_height * reference_side / max(source_width, source_height))),
+    )
+    reference = _load_svg_to_rgba(svg_path, reference_size)
+    bounds = reference.getchannel("A").getbbox() or (0, 0, *reference_size)
+    content_side = max(bounds[2] - bounds[0], bounds[3] - bounds[1])
+    use_clipped_renderer = (
+        max(reference_size) * max(64, max(sizes) * 4) / content_side > 4096
+    )
+    frames = []
+    for size in sizes:
+        # Render the vector anew for each frame, with at least four samples per
+        # output pixel across the visible artwork.
+        if use_clipped_renderer:
+            # Draw into the cropped viewport instead of allocating a huge
+            # image for a mostly transparent SVG viewBox.
+            frames.append(_render_sparse_svg_frame(
+                svg_path, size, reference_size, bounds,
+                content_scale=content_scale, keep_alpha=keep_alpha,
+            ))
+            continue
+        render_scale = max(64, size * 4) / content_side
+        render_size = (
+            max(1, math.ceil(reference_size[0] * render_scale)),
+            max(1, math.ceil(reference_size[1] * render_scale)),
+        )
+        rendered = _load_svg_to_rgba(svg_path, render_size)
+        crop_box = (
+            math.floor(bounds[0] * render_size[0] / reference_size[0]),
+            math.floor(bounds[1] * render_size[1] / reference_size[1]),
+            math.ceil(bounds[2] * render_size[0] / reference_size[0]),
+            math.ceil(bounds[3] * render_size[1] / reference_size[1]),
+        )
+        cropped = rendered.crop(crop_box)
+        if keep_alpha:
+            canvas = _pad_to_square_rgba(cropped, content_scale=content_scale)
+        else:
+            canvas = _pad_to_square_rgb(cropped, content_scale=content_scale)
+        frames.append(canvas.resize((size, size), Image.LANCZOS))
+    return frames
 
 
 def _pad_to_square_rgba(im: Image.Image, *, content_scale: float) -> Image.Image:
@@ -654,6 +794,74 @@ def _resolve_output_target(
 # ICO generation
 # =========================
 
+@contextmanager
+def _icon_output_lock(out_path: Path):
+    """Serialize writes to one icon across the UI and tray processes."""
+    if os.name != "nt":
+        yield
+        return
+
+    import ctypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p]
+    kernel32.CreateMutexW.restype = ctypes.c_void_p
+    kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+    kernel32.WaitForSingleObject.restype = ctypes.c_uint
+    kernel32.ReleaseMutex.argtypes = [ctypes.c_void_p]
+    kernel32.ReleaseMutex.restype = ctypes.c_int
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    kernel32.CloseHandle.restype = ctypes.c_int
+
+    normalized = os.path.normcase(os.path.abspath(out_path))
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    handle = kernel32.CreateMutexW(None, 0, f"Local\\IconMaker-ICO-{digest}")
+    if not handle:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        wait_result = kernel32.WaitForSingleObject(handle, 30000)
+        if wait_result == 0x102:  # WAIT_TIMEOUT
+            raise TimeoutError(f"Timed out waiting to write {out_path}")
+        if wait_result not in (0, 0x80):  # WAIT_OBJECT_0, WAIT_ABANDONED
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            yield
+        finally:
+            kernel32.ReleaseMutex(handle)
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _commit_icon_output(temporary_path: Path, out_path: Path, overwrite: bool) -> str:
+    with _icon_output_lock(out_path):
+        if out_path.exists():
+            if not overwrite:
+                return "exists"
+            try:
+                if filecmp.cmp(temporary_path, out_path, shallow=False):
+                    return "unchanged"
+            except OSError:
+                pass
+
+        last_error: PermissionError | None = None
+        for delay in (0, 0.1, 0.2, 0.4):
+            if delay:
+                time.sleep(delay)
+            try:
+                os.replace(temporary_path, out_path)
+                return "written"
+            except PermissionError as exc:
+                if os.name != "nt" or exc.winerror not in (5, 32):
+                    raise
+                last_error = exc
+
+        raise PermissionError(
+            f"Windows cannot replace {out_path} while it is in use or access is denied; "
+            "close any Explorer window or preview using it and retry. "
+            "The existing icon was preserved."
+        ) from last_error
+
+
 def make_ico(
     src: Path,
     outdir: Path,
@@ -663,7 +871,7 @@ def make_ico(
     overwrite: bool = True,
     keep_alpha: bool = True,
     autocrop: bool = False,
-    padding_mode: str = "balanced",
+    padding_mode: str = "None",
     logfn: Callable[[str], None] | None = None,
 ) -> Tuple[bool, str]:
     src = Path(src)
@@ -684,38 +892,29 @@ def make_ico(
     if not sizes_to_use:
         return False, f"ERR: No valid sizes for {src.name}"
 
-    padding_mode = (padding_mode or "balanced").strip().lower()
-    content_scale = PADDING_PRESETS.get(padding_mode, PADDING_PRESETS["balanced"])
+    content_scale = PADDING_PRESETS[normalize_padding_mode(padding_mode)]
 
+    # Keep the autocrop argument for existing callers; transparent trimming is unconditional.
     try:
-        im = _load_image_any(src)
-    except RuntimeError as e:
-        return False, f"ERR: Failed to open {src.name}: {e}"
+        if src.suffix.lower() == ".svg":
+            frames = _svg_frames(
+                src, sizes_to_use, content_scale=content_scale, keep_alpha=keep_alpha
+            )
+        else:
+            original = _load_image_any(src)
+            trimmed = _autocrop_alpha(original.convert("RGBA"))
+            if keep_alpha:
+                working = _pad_to_square_rgba(trimmed, content_scale=content_scale)
+            else:
+                working = _pad_to_square_rgb(trimmed, content_scale=content_scale)
+            frames = [working.resize((size, size), Image.LANCZOS) for size in sizes_to_use]
     except UnidentifiedImageError as e:
         return False, f"ERR: Unrecognized image file {src.name}: {e}"
     except Exception as e:
-        return False, f"ERR: Failed to open {src.name}: {e}"
-
-    if autocrop:
-        try:
-            im = _autocrop_alpha(im)
-        except Exception:
-            pass
-
-    if keep_alpha:
-        im = im.convert("RGBA")
-        base_canvas = _pad_to_square_rgba(im, content_scale=content_scale)
-    else:
-        im = im.convert("RGBA").convert("RGB")
-        base_canvas = _pad_to_square_rgb(im, content_scale=content_scale)
+        return False, f"ERR: Failed to prepare {src.name}: {type(e).__name__}: {e}"
 
     temporary_path: Path | None = None
     try:
-        if base_canvas.width < ICO_MAX_SIZE:
-            base_canvas = base_canvas.resize((ICO_MAX_SIZE, ICO_MAX_SIZE), Image.LANCZOS)
-
-        base_large = base_canvas.convert("RGBA" if keep_alpha else "RGB")
-
         descriptor, temporary_name = tempfile.mkstemp(
             prefix=ICON_WRITE_TEMP_PREFIX,
             suffix=".tmp",
@@ -723,17 +922,31 @@ def make_ico(
         )
         os.close(descriptor)
         temporary_path = Path(temporary_name)
-        base_large.save(
+        frames[-1].save(
             temporary_path,
             format="ICO",
             sizes=[(s, s) for s in sizes_to_use],
+            append_images=frames[:-1],
         )
-        os.replace(temporary_path, out_path)
+        with Image.open(temporary_path) as written_icon:
+            actual_sizes = sorted(
+                width for width, height in written_icon.info.get("sizes", set())
+                if width == height
+            )
+        if actual_sizes != sizes_to_use:
+            raise RuntimeError(
+                f"ICO frames differ from requested sizes: {actual_sizes} != {sizes_to_use}"
+            )
+        commit_status = _commit_icon_output(temporary_path, out_path, overwrite)
+        if commit_status != "written":
+            msg = f"SKIP: {src.name} -> {out_path.name} ({commit_status})"
+            _safe_log(logfn, msg)
+            return True, msg
         temporary_path = None
 
         msg = (
             f"OK: {src.name} -> {out_path.name} "
-            f"sizes={sizes_to_use[0]}..{sizes_to_use[-1]} ({len(sizes_to_use)} frames)"
+            f"sizes={','.join(str(size) for size in actual_sizes)} ({len(actual_sizes)} frames)"
         )
         _safe_log(logfn, msg)
         return True, msg
@@ -834,7 +1047,8 @@ def normalize_archive_source_images(
     Rules:
     - Never flatten subfolders.
     - Never touch Icons/ or _Quarantine/ trees.
-    - Canonicalize image filenames in-place inside their current parent folders.
+    - Keep valid image filenames, including user-edited case and Unicode.
+    - Canonicalize invalid image filenames inside their current parent folders.
     - Apply strict collision policy via GenName helpers.
     """
     moved = 0
@@ -845,6 +1059,12 @@ def normalize_archive_source_images(
     base.mkdir(parents=True, exist_ok=True)
 
     for p in _iter_archive_source_images(paths=paths, recursive=True):
+        try:
+            validate_archive_image_filename(p.name)
+        except ValueError:
+            pass
+        else:
+            continue
         desired = sanitize_piece(p.stem) + p.suffix.lower()
         if p.name == desired:
             continue
@@ -922,11 +1142,13 @@ def mirror_copy_to_archive_sources_ex(
     paths: EnginePaths | None = None,
     source_root: Path | None = None,
     logfn: Callable[[str], None] | None = None,
+    target_name: str | None = None,
 ) -> Tuple[Optional[Path], Optional[str]]:
     dst, col = copy_into_archive_storage_strict(
         Path(src),
         _archive_import_target_dir(Path(src), paths=paths, source_root=source_root),
         logfn=logfn,
+        target_name=target_name,
     )
     if col is not None:
         return dst, "collision"
@@ -944,10 +1166,9 @@ def list_missing_icon_tasks(
     suffix: str = "",
 ) -> List[Tuple[Path, Path]]:
     """
-    Return (src_png, target_ico) tasks for:
-      - missing .ico files
-      - outdated .ico files (PNG modified after ICO)
+    Return (source image, target icon) tasks only for missing ICO files.
 
+    Background scans must not recreate older icons using later settings.
     The Icons tree mirrors the relative structure of Icon Images.
     """
     if paths is not None:
@@ -978,17 +1199,6 @@ def list_missing_icon_tasks(
 
         if not target.exists():
             tasks.append((img, target))
-            continue
-
-        try:
-            img_mtime = img.stat().st_mtime
-            ico_mtime = target.stat().st_mtime
-        except Exception:
-            tasks.append((img, target))
-            continue
-
-        if img_mtime > ico_mtime:
-            tasks.append((img, target))
 
     return tasks
 
@@ -1001,7 +1211,7 @@ def convert_many(
     overwrite: bool = True,
     keep_alpha: bool = True,
     autocrop: bool = False,
-    padding_mode: str = "balanced",
+    padding_mode: str = "None",
     progress_cb: ProgressCB | None = None,
     logfn: Callable[[str], None] | None = None,
 ) -> Tuple[int, int, int]:
@@ -1068,12 +1278,12 @@ def _scan_counts_only(
             suffix=suffix,
         )
 
-    # In no-overwrite mode, tasks already contains only missing or outdated icons.
+    # In no-overwrite mode, tasks contains only missing icons.
     ok, _skipped, failed = convert_many(
         tasks,
         sizes=_normalize_sizes(list(sizes)),
         suffix=suffix,
-        overwrite=True,
+        overwrite=overwrite,
         keep_alpha=keep_alpha,
         autocrop=autocrop,
         padding_mode=padding_mode,
@@ -1187,7 +1397,7 @@ def _scan_archive_sources_and_convert_impl(
     keep_alpha: bool = True,
     autocrop: bool = False,
     paths: EnginePaths | None = None,
-    padding_mode: str = "balanced",
+    padding_mode: str = "None",
     remove_orphans: bool = True,
     orphan_action: str = "delete",
     suffix: str = "",
@@ -1255,7 +1465,7 @@ def scan_archive_sources_and_convert(
     overwrite: bool = True,
     keep_alpha: bool = True,
     autocrop: bool = False,
-    padding_mode: str = "balanced",
+    padding_mode: str = "None",
     remove_orphans: bool = True,
     orphan_action: str = "delete",
     suffix: str = "",
@@ -1292,7 +1502,7 @@ def scan_archive_sources_and_convert(
 # =========================
 
 def _cli() -> int:
-    ap = argparse.ArgumentParser(description="IconMaker engine CLI (Gen2)")
+    ap = argparse.ArgumentParser(description="IconForge engine CLI (Gen2)")
     ap.add_argument("input", nargs="?", default=None, help="Input file or folder")
     ap.add_argument(
         "--archive-storage-root",
@@ -1306,10 +1516,13 @@ def _cli() -> int:
     ap.add_argument("--sizes", default="auto", help="Comma list, or 'auto', or 'full'")
     ap.add_argument("--suffix", default="", help="Suffix appended to icon name")
     ap.add_argument("--out", default=None, help="Output directory or .ico path")
-    ap.add_argument("--no-overwrite", action="store_true", help="Do not overwrite existing icons")
+    ap.add_argument(
+        "--no-overwrite", action="store_true",
+        help="Do not overwrite direct outputs; archived icons are refreshed after a conversion",
+    )
     ap.add_argument("--no-alpha", action="store_true", help="Discard alpha")
-    ap.add_argument("--autocrop", action="store_true", help="Auto-crop transparent borders")
-    ap.add_argument("--padding", default="balanced", choices=list(PADDING_PRESETS.keys()))
+    ap.add_argument("--autocrop", action="store_true", help="Legacy option; transparent borders are always trimmed")
+    ap.add_argument("--padding", type=_parse_padding_mode, default="None", choices=list(PADDING_PRESETS.keys()))
 
     ap.add_argument("--mirror", action="store_true", help="Copy inputs into archive storage before converting")
     ap.add_argument("--progress-json", action="store_true", help="Emit JSON progress lines for UI integration")
@@ -1412,6 +1625,24 @@ def _cli() -> int:
             ok += 1
         else:
             failed += 1
+
+    if ok:
+        log("Running full archive conversion pass...")
+        full_report = scan_archive_sources_and_convert(
+            paths=paths,
+            sizes=sizes,
+            overwrite=True,
+            keep_alpha=not args.no_alpha,
+            autocrop=args.autocrop,
+            padding_mode=args.padding,
+            remove_orphans=False,
+            logfn=log,
+        )
+        failed += full_report.errors
+        log(
+            f"Archive checked: scanned={full_report.scanned} "
+            f"converted={full_report.converted} errors={full_report.errors}"
+        )
 
     log(f"Done: ok={ok} skipped={skipped} failed={failed}")
 
