@@ -1,0 +1,7 @@
+Version: 1.0.2
+Source commit: 76d24726e5661654b0756ae5c0e0b989d4c980a5
+Installer: IconForge-Setup-1.0.2.exe
+Size: 177989755 bytes
+SHA-256: D7BE724E5BA7BE5C04D053B369846619FFA62E05ADF1421D1B882AF093AFDD51
+Signed: no
+Test-installed: no
