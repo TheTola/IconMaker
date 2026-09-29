@@ -6,6 +6,7 @@ __pycache__/
 *.pyd
 *.log
 desktop.ini
+.iconmaker-folder.ico
 build/
 dist/
 .pytest_cache/

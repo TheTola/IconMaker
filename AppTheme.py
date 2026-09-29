@@ -42,13 +42,13 @@ THEMES = {
         "#080d19", "#101827", "#182b3d", "#0b1423", "#273348",
         "#4b9bb1", "#dbe5f2", "#a9b8ca", "#738298", "#36c9e8",
         "#6bd7ec", "#193344", "#23465a", "#ffffff", "#738298",
-        "#ffadad", "#77d9cf", "#e4ad62",
+        "#ffadad", "#4aaee8", "#e4ad62",
     ),
     "Light": ThemeColors(
         "#b9dcf8", "#cce7fb", "#a8d5f4", "#c1e2fa", "#78b3da",
         "#398fc1", "#153b59", "#345f7e", "#416a87", "#00689f",
         "#005789", "#a1d5f6", "#006ba7", "#e1f3ff", "#5c819c",
-        "#a52940", "#146b5f", "#94600b",
+        "#a52940", "#1870b5", "#94600b",
     ),
 }
 
@@ -71,7 +71,7 @@ _COLOR_ROLES = {
     "selection_text": "#ecfaff #ffffff",
     "disabled": "#738298 #75849a",
     "danger": "#ffadad #ff6b76 #e27f88 #f4d6d6",
-    "success": "#62d6b0 #77d9cf",
+    "success": "#4aaee8 #1870b5",
     "warning": "#e4ad62 #d8ad51",
 }
 

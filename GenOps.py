@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import hashlib
 import os
-import re
 import shutil
 import sys
 import time
@@ -25,6 +24,7 @@ import Gen2 as eng
 import GenLog
 from AppIdentity import APP_NAME, APP_ORG
 from Gen2 import EnginePaths, ScanReport
+from GenFolderIcons import ensure_iconmaker_folder_icons, is_folder_icon_metadata
 
 EVENT_SEQ_KEY = "app_events/seq"
 EVENT_TYPE_KEY = "app_events/type"
@@ -256,12 +256,8 @@ def apply_launch_tray_at_startup(
         return False
 
 
-def _ops_log(message: str, *, paths: EnginePaths | None = None, level: str = "info") -> None:
-    base_dir = None if paths is None else paths.images_dir
-    try:
-        GenLog.write_line("ops", message, level=level, base_dir=base_dir)
-    except Exception:
-        pass
+def _ops_log(message: str, *, level: str = "info") -> None:
+    GenLog.write_line("ops", message, level=level)
 
 
 def _safe_progress(progress_cb: ProgressCB | None, done: int, total: int, current: str) -> None:
@@ -285,108 +281,13 @@ def _iter_all_dirs(root: Path) -> List[str]:
     return sorted(out)
 
 
-def _ensure_archive_images_folder_icon(images_dir: Path) -> None:
-    if sys.platform != "win32" or not images_dir.is_dir():
-        return
-
-    import ctypes
-
-    icon_name = "icon-images-folder.ico"
-    desktop_ini = images_dir / "desktop.ini"
-    try:
-        ini_text = (
-            "[.ShellClassInfo]\r\n"
-            f"IconFile={icon_name}\r\n"
-            "IconIndex=0\r\n"
-            "ConfirmFileOp=0\r\n"
-        )
-        update_ini = not desktop_ini.exists()
-        if desktop_ini.exists():
-            raw = desktop_ini.read_bytes()
-            if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
-                ini_text = raw.decode("utf-16")
-            elif raw.startswith(b"\xef\xbb\xbf"):
-                ini_text = raw.decode("utf-8-sig")
-            else:
-                try:
-                    ini_text = raw.decode("utf-8")
-                except UnicodeError:
-                    ini_text = raw.decode("mbcs")
-
-            newline = "\r\n" if "\r\n" in ini_text else "\n"
-            section_match = re.search(r"(?im)^[ \t]*\[\.ShellClassInfo\][ \t]*(?:\r?\n|$)", ini_text)
-            if section_match:
-                section_start = section_match.end()
-                next_section = re.search(r"(?m)^[ \t]*\[[^\]\r\n]+\][ \t]*(?:\r?\n|$)", ini_text[section_start:])
-                section_end = section_start + next_section.start() if next_section else len(ini_text)
-                section = ini_text[section_start:section_end]
-                icon_setting = re.search(r"(?im)^[ \t]*(IconFile|IconResource)[ \t]*=[ \t]*([^\r\n]*)", section)
-                if icon_setting:
-                    # Preserve a custom icon chosen through Explorer.
-                    if icon_setting.group(1).casefold() != "iconfile" or icon_setting.group(2).strip().casefold() != icon_name:
-                        return
-                else:
-                    section = re.sub(r"(?im)^[ \t]*IconIndex[ \t]*=[^\r\n]*(?:\r?\n)?", "", section)
-                    ini_text = (
-                        ini_text[:section_start]
-                        + f"IconFile={icon_name}" + newline + "IconIndex=0" + newline
-                        + section + ini_text[section_end:]
-                    )
-                    update_ini = True
-            else:
-                separator = "" if not ini_text or ini_text.endswith(("\r", "\n")) else newline
-                ini_text += separator + (
-                    f"[.ShellClassInfo]{newline}IconFile={icon_name}{newline}IconIndex=0{newline}"
-                )
-                update_ini = True
-
-        asset_root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
-        icon_source = asset_root / "assets" / icon_name
-        if not icon_source.is_file():
-            return
-
-        folder_icon = images_dir / icon_name
-        if not folder_icon.exists():
-            shutil.copy2(icon_source, folder_icon)
-        if update_ini:
-            desktop_ini.write_bytes(ini_text.encode("utf-16"))
-
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        get_attributes = kernel32.GetFileAttributesW
-        get_attributes.argtypes = [ctypes.c_wchar_p]
-        get_attributes.restype = ctypes.c_uint32
-        set_attributes = kernel32.SetFileAttributesW
-        set_attributes.argtypes = [ctypes.c_wchar_p, ctypes.c_uint32]
-        set_attributes.restype = ctypes.c_int
-        for path in (folder_icon, desktop_ini):
-            attributes = get_attributes(str(path))
-            if attributes == 0xFFFFFFFF or not set_attributes(str(path), attributes | 0x06):
-                raise ctypes.WinError(ctypes.get_last_error())
-
-        shlwapi = ctypes.WinDLL("shlwapi", use_last_error=True)
-        make_system_folder = shlwapi.PathMakeSystemFolderW
-        make_system_folder.argtypes = [ctypes.c_wchar_p]
-        make_system_folder.restype = ctypes.c_int
-        if not make_system_folder(str(images_dir)):
-            raise OSError(f"Could not enable the folder icon for {images_dir}")
-        if update_ini:
-            shell32 = ctypes.WinDLL("shell32")
-            notify = shell32.SHChangeNotify
-            notify.argtypes = [ctypes.c_long, ctypes.c_uint, ctypes.c_void_p, ctypes.c_void_p]
-            notify.restype = None
-            folder_path = ctypes.c_wchar_p(str(images_dir))
-            notify(0x00002000, 0x0005, ctypes.cast(folder_path, ctypes.c_void_p), None)
-    except Exception as exc:
-        _ops_log(f"folder icon setup failed: {type(exc).__name__}: {exc}", level="error")
-
-
 def build_archive_storage_watch_paths(paths: EnginePaths) -> List[str]:
     try:
         paths.images_dir.mkdir(parents=True, exist_ok=True)
         paths.icons_dir.mkdir(parents=True, exist_ok=True)
     except Exception:
         pass
-    _ensure_archive_images_folder_icon(paths.images_dir)
+    ensure_iconmaker_folder_icons(paths)
     return _iter_all_dirs(paths.images_dir)
 
 
@@ -467,6 +368,8 @@ def clean_generated_icons_dir(
     deleted_files = 0
     failed_files = 0
     for path in files:
+        if is_folder_icon_metadata(path):
+            continue
         if path.suffix.lower() == ".ico":
             continue
         if path.name.startswith(eng.ICON_WRITE_TEMP_PREFIX) and path.suffix == ".tmp":
@@ -510,7 +413,7 @@ def full_archive_conversion_pass(
     logfn: Callable[[str], None] | None = None,
     progress_cb: ProgressCB | None = None,
 ) -> ScanReport:
-    """Rebuild every icon in the managed archive after a conversion."""
+    """Explicitly rebuild every icon in the managed archive."""
     def on_progress(phase: str, done: int, total: int, path: Path | None) -> None:
         label = path.name if path is not None else phase
         _safe_progress(progress_cb, done, total, f"Updating archive: {label}")
@@ -528,7 +431,6 @@ def full_archive_conversion_pass(
     )
     _ops_log(
         f"full archive conversion: scanned={report.scanned} converted={report.converted} errors={report.errors}",
-        paths=paths,
         level="error" if report.errors else "info",
     )
     return report
@@ -542,6 +444,7 @@ def run_archive_maintenance(
     padding_mode: str,
     autocrop: bool,
     logfn: Callable[[str], None] | None = None,
+    changed_images: Sequence[Path] = (),
 ) -> ScanReport:
     """
     Run maintenance against managed archive storage.
@@ -555,7 +458,7 @@ def run_archive_maintenance(
     cleanup = clean_generated_icons_dir(paths=paths, logfn=logfn)
     report = eng.scan_archive_sources_and_convert(
         paths=paths,
-        overwrite=overwrite,
+        overwrite=overwrite and not changed_images,
         sizes=sizes,
         padding_mode=padding_mode,
         autocrop=autocrop,
@@ -563,32 +466,38 @@ def run_archive_maintenance(
         remove_orphans=True,
         orphan_action="delete",
     )
-    if report.converted and not overwrite:
-        full_report = full_archive_conversion_pass(
-            paths=paths,
-            sizes=sizes,
-            padding_mode=padding_mode,
-            autocrop=autocrop,
-            logfn=logfn,
+    changed_converted = 0
+    changed_errors = 0
+    for source in changed_images:
+        source = Path(source)
+        if not source.is_file():
+            continue
+        try:
+            target = eng.archive_icon_path_for_source_image(source, paths=paths)
+            ok, message = eng.make_ico(
+                source, target, sizes=sizes, overwrite=True,
+                padding_mode=padding_mode, autocrop=autocrop, logfn=logfn,
+            )
+        except Exception as exc:
+            ok, message = False, f"{type(exc).__name__}: {exc}"
+        if not ok:
+            changed_errors += 1
+            if logfn:
+                logfn(f"ERR: Could not update changed image {source.name}: {message}")
+        elif not message.startswith("SKIP:"):
+            changed_converted += 1
+    if changed_converted or changed_errors:
+        report = ScanReport(
+            scanned=report.scanned,
+            converted=report.converted + changed_converted,
+            errors=report.errors + changed_errors,
+            orphan_icons_removed=report.orphan_icons_removed,
+            normalized_moves=report.normalized_moves,
         )
-        if logfn:
-            logfn(
-                f"Full archive pass: scanned={full_report.scanned} "
-                f"converted={full_report.converted} errors={full_report.errors}"
-            )
-        if full_report.errors:
-            report = ScanReport(
-                scanned=report.scanned,
-                converted=report.converted,
-                errors=report.errors + full_report.errors,
-                orphan_icons_removed=report.orphan_icons_removed,
-                normalized_moves=report.normalized_moves,
-            )
     _ops_log(
         "archive maintenance: "
         f"moved_images={cleanup.moved_images} deleted_invalid={cleanup.deleted_files} "
         f"converted={report.converted} orphans={report.orphan_icons_removed} normalized={report.normalized_moves}",
-        paths=paths,
     )
     publish_app_event(
         "archive-storage-maintained",
@@ -708,7 +617,7 @@ def relocate_archive_storage(
         if delete_source:
             shutil.rmtree(source_images_dir)
 
-        _ensure_archive_images_folder_icon(target_paths.images_dir)
+        ensure_iconmaker_folder_icons(target_paths)
         save_archive_storage_root(plan.target_root)
         publish_app_event("archive-storage-relocated", str(plan.target_root))
         _ops_log(f"archive storage relocation complete: {plan.source_root} -> {plan.target_root} files={copied}")
@@ -737,7 +646,7 @@ def run_conversion(
 
     input_path = Path(request.input_path)
     if not input_path.exists():
-        _ops_log(f"conversion input missing: {input_path}", paths=request.paths, level="error")
+        _ops_log(f"conversion input missing: {input_path}", level="error")
         return ConversionResult(False, 0, 0, 0, "ERR: Input path does not exist.")
 
     images = eng.find_images(input_path, recursive=request.recursive)
@@ -755,105 +664,123 @@ def run_conversion(
     skipped = 0
     failed = 0
     first_failure = ""
-    full_report: ScanReport | None = None
-    total = len(images)
-    import_root = input_path if input_path.is_dir() else None
-    conversion_jobs: List[tuple[int, Path]] = []
-    if request.mirror:
-        for idx, image in enumerate(images, start=1):
+    def process_batch(batch: List[Path], *, source_root: Path | None, overwrite_first: bool,
+                      progress_start: int, progress_span: int) -> bool:
+        nonlocal converted, skipped, failed, first_failure
+        total = len(batch)
+        progress_total = total * 2 if request.mirror else total
+
+        def progress(done: int, status: str) -> None:
+            value = progress_start + int(progress_span * done / max(1, progress_total))
+            _safe_progress(progress_cb, value, 100, status)
+
+        conversion_jobs: List[tuple[int, Path]] = []
+        if request.mirror:
+            for idx, image in enumerate(batch, start=1):
+                if cancelled():
+                    return True
+                source_image = Path(image)
+                progress(idx - 1, f"Importing {idx}/{total}: {source_image.name}")
+                try:
+                    mirrored = eng.mirror_copy_to_archive_sources(
+                        source_image,
+                        paths=request.paths,
+                        source_root=source_root,
+                        logfn=logfn,
+                        unique_on_collision=True,
+                    )
+                except Exception as exc:
+                    failed += 1
+                    if not first_failure:
+                        first_failure = f"{source_image.name}: {type(exc).__name__}: {exc}"
+                    _ops_log(
+                        f"Import failed: {source_image}: {type(exc).__name__}: {exc}",
+                        level="error",
+                    )
+                    if logfn:
+                        logfn(f"ERR: Import failed: {source_image}: {type(exc).__name__}: {exc}")
+                    continue
+                if cancelled():
+                    return True
+                if not mirrored:
+                    failed += 1
+                    if not first_failure:
+                        first_failure = f"{source_image.name}: Could not import image into archive storage."
+                    if logfn:
+                        logfn(f"ERR: Import failed: {source_image}")
+                    continue
+                conversion_jobs.append((idx, Path(mirrored)))
+        else:
+            conversion_jobs = [(idx, Path(image)) for idx, image in enumerate(batch, start=1)]
+
+        for idx, source_image in conversion_jobs:
             if cancelled():
-                return ConversionResult(False, converted, skipped, failed, "Stopped by cancel.")
-            source_image = Path(image)
-            _safe_progress(progress_cb, idx - 1, total * 2, f"Importing {idx}/{total}: {source_image.name}")
+                return True
+            current_status = f"Converting {idx}/{total}: {source_image.name}"
+            progress_done = total + idx - 1 if request.mirror else idx - 1
+            progress(progress_done, current_status)
             try:
-                mirrored = eng.mirror_copy_to_archive_sources(
+                output_target = (
+                    eng.archive_icon_path_for_source_image(source_image, paths=request.paths)
+                    if request.mirror else request.paths.icons_dir
+                )
+                ok, message = eng.make_ico(
                     source_image,
-                    paths=request.paths,
-                    source_root=import_root,
+                    output_target,
+                    sizes=request.sizes,
+                    overwrite=overwrite_first and idx == 1,
+                    keep_alpha=request.keep_alpha,
+                    autocrop=request.autocrop,
+                    padding_mode=request.padding_mode,
                     logfn=logfn,
                 )
             except Exception as exc:
+                ok = False
+                message = f"ERR: make_ico crashed for {source_image}: {type(exc).__name__}: {exc}"
+                if logfn:
+                    logfn(message)
+
+            if ok and str(message).startswith("SKIP:"):
+                skipped += 1
+            elif ok:
+                converted += 1
+            else:
                 failed += 1
                 if not first_failure:
-                    first_failure = f"{source_image.name}: {type(exc).__name__}: {exc}"
-                _ops_log(
-                    f"Import failed: {source_image}: {type(exc).__name__}: {exc}",
-                    paths=request.paths,
-                    level="error",
-                )
-                if logfn:
-                    logfn(f"ERR: Import failed: {source_image}: {type(exc).__name__}: {exc}")
-                continue
-
+                    first_failure = f"{source_image.name}: {message.removeprefix('ERR: ')}"
+                _ops_log(f"Conversion failed: {source_image}: {message}", level="error")
+            progress(progress_done + 1, current_status)
             if cancelled():
-                return ConversionResult(False, converted, skipped, failed, "Stopped by cancel.")
-            if not mirrored:
-                skipped += 1
-                if logfn:
-                    logfn(f"SKIP: Import skipped: {source_image}")
-                continue
-            conversion_jobs.append((idx, Path(mirrored)))
-    else:
-        conversion_jobs = [(idx, Path(image)) for idx, image in enumerate(images, start=1)]
+                return True
+        return False
 
-    for idx, source_image in conversion_jobs:
+    is_file = input_path.is_file()
+    if process_batch(
+        images,
+        source_root=input_path if not is_file else None,
+        overwrite_first=request.overwrite and is_file,
+        progress_start=0,
+        progress_span=40 if is_file else 100,
+    ):
+        return ConversionResult(False, converted, skipped, failed, "Stopped by cancel.")
+    if is_file:
         if cancelled():
             return ConversionResult(False, converted, skipped, failed, "Stopped by cancel.")
-        current_status = f"Converting {idx}/{total}: {source_image.name}"
-        progress_done = total + idx - 1 if request.mirror else idx - 1
-        progress_total = total * 2 if request.mirror else total
-        _safe_progress(progress_cb, progress_done, progress_total, current_status)
-        try:
-            output_target = (
-                eng.archive_icon_path_for_source_image(source_image, paths=request.paths)
-                if request.mirror else request.paths.icons_dir
-            )
-            ok, message = eng.make_ico(
-                source_image,
-                output_target,
-                sizes=request.sizes,
-                overwrite=request.overwrite,
-                keep_alpha=request.keep_alpha,
-                autocrop=request.autocrop,
-                padding_mode=request.padding_mode,
-                logfn=logfn,
-            )
-        except Exception as exc:
-            ok = False
-            message = f"ERR: make_ico crashed for {source_image}: {type(exc).__name__}: {exc}"
-            if logfn:
-                logfn(message)
-
-        if ok and str(message).startswith("SKIP:"):
-            skipped += 1
-        elif ok:
-            converted += 1
-        else:
-            failed += 1
-            if not first_failure:
-                first_failure = f"{source_image.name}: {message.removeprefix('ERR: ')}"
-            _ops_log(f"Conversion failed: {source_image}: {message}", paths=request.paths, level="error")
-
-        _safe_progress(progress_cb, progress_done + 1, progress_total, current_status)
-        if cancelled():
-            return ConversionResult(False, converted, skipped, failed, "Stopped by cancel.")
-
-    if converted and not cancelled():
+        _safe_progress(progress_cb, 40, 100, f"Scanning folder: {input_path.parent}")
+        # This scan follows the selected image's conversion and does not use
+        # the background watcher or its configured state.
+        siblings = [
+            image for image in eng.find_images(input_path.parent, recursive=False)
+            if image != input_path
+        ]
         if logfn:
-            logfn("Running full archive conversion pass...")
-        full_report = full_archive_conversion_pass(
-            paths=request.paths,
-            sizes=request.sizes,
-            padding_mode=request.padding_mode,
-            autocrop=request.autocrop,
-            keep_alpha=request.keep_alpha,
-            logfn=logfn,
-            progress_cb=progress_cb,
-        )
-        if full_report.errors:
-            failed += full_report.errors
-            if not first_failure:
-                first_failure = f"Full archive pass had {full_report.errors} error(s); see the log."
+            logfn(f"Folder scan: {len(siblings)} other image(s) found in {input_path.parent}")
+        if process_batch(
+            siblings, source_root=None, overwrite_first=False,
+            progress_start=40, progress_span=60,
+        ):
+            return ConversionResult(False, converted, skipped, failed, "Stopped by cancel.")
+        _safe_progress(progress_cb, 100, 100, "Folder scan complete.")
 
     details = []
     if converted:
@@ -863,14 +790,9 @@ def run_conversion(
     if failed:
         details.append(f"{failed} conversion{'s' if failed != 1 else ''} failed.")
         details.append(f"First error: {first_failure}")
-    if full_report is not None:
-        details.append(
-            f"Archive checked: {full_report.scanned} image{'s' if full_report.scanned != 1 else ''}, "
-            f"{full_report.converted} icon{'s' if full_report.converted != 1 else ''} updated."
-        )
     message = " ".join(details) or "No icons created."
     if logfn:
         logfn(message)
-    _ops_log(f"conversion finished: {message}", paths=request.paths)
+    _ops_log(f"conversion finished: {message}")
     publish_app_event("conversion-finished", message)
     return ConversionResult(failed == 0, converted, skipped, failed, message)

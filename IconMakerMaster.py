@@ -30,7 +30,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Final, Optional
 
+if __name__ == "__main__" and "--folder-icons-only" in sys.argv[1:]:
+    from GenFolderIcons import ensure_install_folder_icon
+
+    ensure_install_folder_icon()
+    raise SystemExit(0)
+
 import GenLog
+from GenFolderIcons import ensure_startup_folder_icons
 from AppIdentity import (
     APP_COPYRIGHT,
     APP_DISPLAY_NAME,
@@ -170,27 +177,12 @@ def app_base_dir() -> Path:
 
 
 def crash_log_dir() -> Path:
-    """Use a user-writable crash-log location that survives launcher failures."""
-    if os.name == "nt":
-        local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
-        if local_appdata:
-            return Path(local_appdata) / APP_ORG / APP_NAME / "CrashLogs"
-    return app_base_dir() / "CrashLogs"
-
-
-def _safe_mkdir(path: Path) -> None:
-    try:
-        path.mkdir(parents=True, exist_ok=True)
-    except Exception:
-        pass
+    """Use the shared user-writable directory for crash logs."""
+    return GenLog.logs_dir()
 
 
 def write_crash_log(exc: BaseException, *, mode: str) -> Path | None:
-    log_dir = crash_log_dir()
-    _safe_mkdir(log_dir)
-
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    log_path = log_dir / f"crash_{timestamp}_{mode}.log"
 
     lines = [
         f"App: {APP_DISPLAY_NAME}",
@@ -210,11 +202,7 @@ def write_crash_log(exc: BaseException, *, mode: str) -> Path | None:
         "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
     ]
 
-    try:
-        log_path.write_text("\n".join(lines), encoding="utf-8", errors="ignore")
-        return log_path
-    except Exception:
-        return None
+    return GenLog.write_file(f"crash_{timestamp}_{mode}", "\n".join(lines))
 
 
 def show_fatal_error(message: str, *, title: str = APP_DISPLAY_NAME) -> None:
@@ -415,7 +403,6 @@ def run_generator() -> None:
         flags = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "")
         existing_flags = {part.split("=", 1)[0] for part in flags.split()}
         for flag in (
-            "--disable-gpu",
             "--disable-accelerated-video-encode",
             "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
         ):
@@ -437,6 +424,7 @@ def _show_already_running_ui_message() -> None:
 def main() -> None:
     mode = parse_mode(sys.argv)
     _log(f'launcher start mode={mode} frozen={is_frozen()} exe={sys.executable}')
+    ensure_startup_folder_icons()
 
     if mode == "tray":
         if not acquire_tray_mutex():

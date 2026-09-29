@@ -1,4 +1,4 @@
-#define AppVersion "1.0.1"
+#define AppVersion "1.0.2"
 
 [Setup]
 AppId={{05A985C7-DBA1-447B-B28A-90EF582B82C5}
@@ -12,7 +12,7 @@ PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 OutputDir=build\release-installer
 OutputBaseFilename=IconForge-Setup-{#AppVersion}
-SetupIconFile=assets\iconner.ico
+SetupIconFile=assets\folder_icons\iconmaker.ico
 UninstallDisplayIcon={app}\IconMaker.exe
 Compression=lzma2
 SolidCompression=yes
@@ -30,6 +30,7 @@ Name: "{autoprograms}\IconForge"; Filename: "{app}\IconMaker.exe"
 Name: "{autodesktop}\IconForge"; Filename: "{app}\IconMaker.exe"; Tasks: desktopicon
 
 [Run]
+Filename: "{app}\IconMaker.exe"; Parameters: "--folder-icons-only"; Flags: runhidden waituntilterminated
 Filename: "{app}\IconMaker.exe"; Description: "Launch IconForge"; Flags: nowait postinstall skipifsilent
 
 [Code]

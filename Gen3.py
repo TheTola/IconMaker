@@ -77,17 +77,8 @@ def _generated_icons_dir() -> Path:
     return _current_engine_paths().icons_dir
 
 
-def _logs_dir() -> Path:
-    return _archive_sources_dir() / "Logs"
-
-
 def _log(message: str, *, level: str = "info") -> None:
-    try:
-        logs_dir = _logs_dir()
-        logs_dir.mkdir(parents=True, exist_ok=True)
-        GenLog.write_line("tray", message, level=level, base_dir=_archive_sources_dir())
-    except Exception:
-        pass
+    GenLog.write_line("tray", message, level=level)
 
 
 def _unique_paths(items: Iterable[str]) -> List[str]:
@@ -208,25 +199,6 @@ def scan_and_convert(*, autocrop: bool = False, padding_mode: str | None = None)
         logfn=_log,
     )
     archive_errors = report.errors
-    if report.converted:
-        try:
-            full_report = GenOps.full_archive_conversion_pass(
-                paths=paths,
-                sizes=selected_sizes,
-                padding_mode=selected_padding,
-                autocrop=autocrop,
-                logfn=_log,
-            )
-        except Exception as exc:
-            archive_errors += 1
-            _log(f"Full archive conversion failed: {type(exc).__name__}: {exc}", level="error")
-        else:
-            archive_errors += full_report.errors
-            _log(
-                f"Full archive conversion: scanned={full_report.scanned} "
-                f"converted={full_report.converted} errors={full_report.errors}",
-                level="error" if full_report.errors else "info",
-            )
     if (
         promoted
         or cleanup.moved_images
@@ -476,7 +448,6 @@ def main() -> None:
     try:
         _archive_sources_dir().mkdir(parents=True, exist_ok=True)
         _generated_icons_dir().mkdir(parents=True, exist_ok=True)
-        _logs_dir().mkdir(parents=True, exist_ok=True)
     except Exception:
         pass
     GenOps.reconcile_image_copies(paths=_current_engine_paths(), on_start_or_close=True, logfn=_log)

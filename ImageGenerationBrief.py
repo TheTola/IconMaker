@@ -41,5 +41,5 @@ def codex_generation_request(description: str) -> str:
 
 
 def visual_generation_request(description: str) -> str:
-    """Add the defaults to a Firefly or Designer request when that site is submitted."""
+    """Add the defaults to a Designer request when that site is submitted."""
     return f"{VISUAL_REQUIREMENTS}\n\nImage request:\n{description.strip()}"

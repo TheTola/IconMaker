@@ -6,24 +6,33 @@ import json
 import re
 import sys
 import time
+from collections import deque
 from pathlib import Path
 
 from PySide6 import QtCore, QtGui, QtWidgets
-from PySide6.QtWebEngineCore import QWebEngineLoadingInfo, QWebEnginePage, QWebEngineProfile, QWebEngineScript, QWebEngineSettings
+from PySide6.QtNetwork import QLocalServer
+from PySide6.QtWebEngineCore import QWebEngineContextMenuRequest, QWebEngineLoadingInfo, QWebEnginePage, QWebEngineProfile, QWebEngineScript, QWebEngineSettings
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
 import GenLog
 from AppIdentity import APP_NAME, APP_ORG
 from AppTheme import theme_color, theme_css, theme_manager
+from AppTitleBar import CustomTitleBar, ThemedDialog, TITLE_BAR_CSS
+from GeneratedImageInfo import ImageOrigin, utc_now
 from IconImagePrototype import IconImagePrototype
 from ImageSiteDownloads import ImageSiteDownloads
 from ImageGenerationBrief import OPENING_BRIEF
+from GeneratorLoading import GeneratorLoading
+from GenStartupOverlay import StartupOverlay
+from GenSignInState import (
+    CONTROL_SERVER_NAME, GENERATOR_OPENED_KEY, PROVIDERS, SIGN_IN_PROVIDERS, set_sign_in_status,
+    should_offer_sign_in,
+)
 
 
 SITES = (
     ("ChatGPT", "https://chatgpt.com/"),
     ("Gemini", "https://gemini.google.com/app"),
-    ("Adobe Firefly", "https://firefly.adobe.com/"),
     ("Microsoft Designer", "https://designer.microsoft.com/"),
 )
 CODEX_LABEL = "Codex"
@@ -33,17 +42,16 @@ IMAGE_PATH_ROLE = QtCore.Qt.UserRole
 IMAGE_SAVED_ROLE = QtCore.Qt.UserRole + 1
 IMAGE_NAME_ROLE = QtCore.Qt.UserRole + 2
 IMAGE_PROVIDER_ROLE = QtCore.Qt.UserRole + 3
+PREVIEW_MIME = "application/x-iconforge-preview-path"
 SITE_ICONS = {
     "ChatGPT": "provider-chatgpt.png",
     "Gemini": "provider-gemini.png",
-    "Adobe Firefly": "provider-adobe-firefly.png",
     "Microsoft Designer": "provider-microsoft-designer.png",
     CODEX_LABEL: "provider-codex.png",
 }
 SITE_TILE_LABELS = {
     "ChatGPT": "ChatGPT",
     "Gemini": "Gemini",
-    "Adobe Firefly": "Firefly",
     "Microsoft Designer": "Designer",
     CODEX_LABEL: "Codex",
 }
@@ -51,7 +59,6 @@ ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 PORTAL_SURFACES = {
     "ChatGPT": "#080d19",
     "Gemini": "#080d19",
-    "Adobe Firefly": "#f5f5f3",
     "Microsoft Designer": "#121212",
 }
 
@@ -60,38 +67,6 @@ def _site_surface(provider: str) -> str:
     if provider in {"ChatGPT", "Gemini"} and theme_manager().appearance == "Light":
         return theme_manager().colors.window
     return PORTAL_SURFACES.get(provider, "#080d19")
-
-
-def _site_loading_text(provider: str) -> str:
-    if provider == "Adobe Firefly":
-        return "#455f77"
-    if provider == "Microsoft Designer":
-        return "#dbe5f2"
-    return theme_manager().colors.muted
-
-
-def _suggest_name(provider: str, path: Path, prompt: str = "") -> str:
-    if provider == CODEX_LABEL and prompt:
-        words = re.findall(r"[^\W_]+(?:[-'][^\W_]+)*", prompt, flags=re.UNICODE)
-        while words and words[0].casefold() in {
-            "create", "generate", "draw", "make", "an", "a", "the", "image", "icon", "of"
-        }:
-            words.pop(0)
-        if words:
-            title: list[str] = []
-            for word in words:
-                if title and word.casefold() in {"with", "against", "using", "featuring", "showing"}:
-                    break
-                title.append(word)
-                if len(title) == 6:
-                    break
-            while len(title) > 1 and title[-1].casefold() in {"icon", "image", "picture", "illustration"}:
-                title.pop()
-            return " ".join(title)[:100]
-    stem = path.stem
-    if stem.startswith("generated-original"):
-        return "Generated image"
-    return stem[:100] or "Generated image"
 
 
 def _site_icon(name: str) -> QtGui.QIcon:
@@ -130,11 +105,28 @@ def _site_icon(name: str) -> QtGui.QIcon:
 class SitePage(QWebEnginePage):
     imageDragEnded = QtCore.Signal(str)
 
+    def take_image_download_context(self) -> dict[str, str] | None:
+        contexts = getattr(self, "_image_download_contexts", deque())
+        while contexts:
+            timestamp, context = contexts.popleft()
+            if time.monotonic() - timestamp <= 5 and context.get("page_url") == self.url().toString():
+                return context
+        return None
+
     def javaScriptConsoleMessage(self, level: QWebEnginePage.JavaScriptConsoleMessageLevel,
                                  message: str, line_number: int, source_id: str) -> None:
         prefix = "iconforge-image-drag-end:"
         if message.startswith(prefix):
             self.imageDragEnded.emit(message[len(prefix):])
+        elif message.startswith("iconforge-image-download-context:"):
+            try:
+                context = json.loads(message.split(":", 1)[1])
+            except (TypeError, ValueError):
+                return
+            if isinstance(context, dict) and context.get("page_url") == self.url().toString():
+                if not hasattr(self, "_image_download_contexts"):
+                    self._image_download_contexts = deque(maxlen=16)
+                self._image_download_contexts.append((time.monotonic(), context))
         else:
             super().javaScriptConsoleMessage(level, message, line_number, source_id)
 
@@ -142,17 +134,21 @@ class SitePage(QWebEnginePage):
 class SiteView(QWebEngineView):
     """Keep one official site and any sign-in popups in the same browser profile."""
 
+    addImageRequested = QtCore.Signal(str)
+    popupCreated = QtCore.Signal(object)
+
     def __init__(
         self,
         profile: QWebEngineProfile,
         provider: str,
-        popups: list[SiteView],
+        popups: list[QtWidgets.QWidget],
         parent: QtWidgets.QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._profile = profile
         self._provider = provider
         self._popups = popups
+        self._initializing = True
         page = SitePage(profile, self)
         surface = _site_surface(provider)
         page.setBackgroundColor(QtGui.QColor(surface))
@@ -179,11 +175,99 @@ class SiteView(QWebEngineView):
                 }, true);
             """)
             page.scripts().insert(drag_script)
+        context_script = QWebEngineScript()
+        context_script.setName("icon-forge-image-download-context")
+        context_script.setInjectionPoint(QWebEngineScript.InjectionPoint.DocumentReady)
+        context_script.setWorldId(QWebEngineScript.ScriptWorldId.ApplicationWorld)
+        context_script.setRunsOnSubFrames(False)
+        context_script.setSourceCode("""(() => {
+            if (!/^(chatgpt\\.com|gemini\\.google\\.com|designer\\.microsoft\\.com)$/.test(location.hostname))
+                return;
+            let activePrompt = '';
+            let baseline = new Set();
+            const newImages = new Map();
+            const imageUrl = image => image.currentSrc || image.src || '';
+            const allImageUrls = () => new Set(Array.from(document.images, imageUrl));
+            const editorText = root => {
+                const candidates = Array.from((root || document).querySelectorAll(
+                    'textarea, [contenteditable="true"], input[type="text"]'));
+                const editor = candidates.reverse().find(element => element.getClientRects().length &&
+                    !element.closest('[aria-hidden="true"]') &&
+                    String(element.value || element.innerText || '').trim().length > 2);
+                return editor ? String(editor.value || editor.innerText || '').trim() : '';
+            };
+            const rememberPrompt = root => {
+                const prompt = editorText(root) || editorText(document);
+                if (!prompt) return;
+                activePrompt = prompt;
+                baseline = allImageUrls();
+            };
+            const observeImage = image => {
+                if (!activePrompt || !image.complete || image.naturalWidth < 256 || image.naturalHeight < 256)
+                    return;
+                const url = imageUrl(image);
+                if (url && !baseline.has(url) && !newImages.has(url))
+                    newImages.set(url, {prompt: activePrompt, observed_at_utc: new Date().toISOString()});
+            };
+            window.__iconForgeImageOrigin = url => {
+                const image = Array.from(document.images).find(candidate => imageUrl(candidate) === url);
+                const info = newImages.get(url);
+                if (!image && !info) return null;
+                return {
+                    title: image ? (image.alt || image.title || '') : '',
+                    prompt: info ? info.prompt : '',
+                    observed_at_utc: info ? info.observed_at_utc : ''
+                };
+            };
+            document.addEventListener('load', event => {
+                if (event.target instanceof HTMLImageElement) observeImage(event.target);
+            }, true);
+            new MutationObserver(records => {
+                for (const record of records)
+                    for (const node of record.addedNodes)
+                        if (node instanceof Element) {
+                            if (node instanceof HTMLImageElement) observeImage(node);
+                            node.querySelectorAll('img').forEach(observeImage);
+                        }
+            }).observe(document, {childList: true, subtree: true});
+            document.addEventListener('submit', event => {
+                if (event.isTrusted) rememberPrompt(event.target);
+            }, true);
+            document.addEventListener('keydown', event => {
+                if (event.isTrusted && event.key === 'Enter' && !event.shiftKey &&
+                    event.target instanceof Element &&
+                    event.target.closest('textarea, [contenteditable="true"], input[type="text"]'))
+                    rememberPrompt(event.target.closest('form'));
+            }, true);
+            document.addEventListener('click', event => {
+                if (!event.isTrusted || !(event.target instanceof Element)) return;
+                const button = event.target.closest('button, [role="button"], a[download]');
+                if (!button) return;
+                const label = String(button.getAttribute('aria-label') || button.getAttribute('title') ||
+                    button.innerText || '').trim();
+                if (/\\b(generate|create|send)\\b/i.test(label)) rememberPrompt(button.closest('form'));
+                if (!/\\b(download|save)\\b/i.test(label)) return;
+                let image = null;
+                for (let node = button, depth = 0; node && node !== document.body && depth < 8;
+                        node = node.parentElement, depth++) {
+                    const images = Array.from(node.querySelectorAll('img')).filter(candidate =>
+                        candidate.complete && candidate.naturalWidth >= 256 && candidate.naturalHeight >= 256);
+                    if (images.length === 1) { image = images[0]; break; }
+                    const matched = images.filter(candidate => newImages.has(imageUrl(candidate)));
+                    if (matched.length === 1) { image = matched[0]; break; }
+                }
+                const info = image && newImages.get(imageUrl(image));
+                console.info('iconforge-image-download-context:' + JSON.stringify({
+                    page_url: location.href,
+                    title: image ? (image.alt || image.title || '') : '',
+                    prompt: info ? info.prompt : '',
+                    observed_at_utc: info ? info.observed_at_utc : ''
+                }));
+            }, true);
+        })();""")
+        page.scripts().insert(context_script)
         self._color_script: QWebEngineScript | None = None
-        if provider == "Adobe Firefly":
-            # Chromium's forced dark colors hide Firefly's hero text.
-            page.settings().setAttribute(QWebEngineSettings.WebAttribute.ForceDarkMode, False)
-        elif provider == "Gemini":
+        if provider == "Gemini":
             script = QWebEngineScript()
             script.setName("icon-forge-gemini-colors")
             script.setInjectionPoint(QWebEngineScript.InjectionPoint.DocumentReady)
@@ -233,6 +317,7 @@ class SiteView(QWebEngineView):
             self._color_script = script
         self.setPage(page)
         self._apply_theme()
+        self._initializing = False
         theme_manager().changed.connect(self._apply_theme)
         page.windowCloseRequested.connect(self.close)
 
@@ -245,20 +330,43 @@ class SiteView(QWebEngineView):
         for script in scripts.toList():
             if script.name() == self._color_script.name():
                 scripts.remove(script)
-        self.page().runJavaScript("document.getElementById('iconforge-provider-colors')?.remove();")
+        if not self._initializing:
+            self.page().runJavaScript("document.getElementById('iconforge-provider-colors')?.remove();")
         if theme_manager().appearance == "Dark":
             scripts.insert(self._color_script)
-            self.page().runJavaScript(self._color_script.sourceCode())
+            if not self._initializing:
+                self.page().runJavaScript(self._color_script.sourceCode())
 
     def createWindow(self, _window_type: QWebEnginePage.WebWindowType) -> QWebEngineView:
-        popup = SiteView(self._profile, self._provider, self._popups)
-        popup.setAttribute(QtCore.Qt.WA_DeleteOnClose)
-        popup.setWindowTitle(f"{self._provider} sign-in")
-        popup.resize(920, 700)
-        popup.show()
-        self._popups.append(popup)
-        popup.destroyed.connect(lambda: self._popups.remove(popup) if popup in self._popups else None)
+        popup_window = ThemedDialog(f"{self._provider} · Image Generator")
+        popup_window.resize(920, 700)
+        popup = SiteView(self._profile, self._provider, self._popups, popup_window)
+        popup_window.content_layout.addWidget(popup)
+        popup.page().windowCloseRequested.connect(popup_window.close)
+        popup_window.finished.connect(popup_window.deleteLater)
+        popup_window.show()
+        self._popups.append(popup_window)
+        popup_window.destroyed.connect(
+            lambda: self._popups.remove(popup_window) if popup_window in self._popups else None
+        )
+        self.popupCreated.emit(popup)
         return popup
+
+    def contextMenuEvent(self, event: QtGui.QContextMenuEvent) -> None:
+        request = self.lastContextMenuRequest()
+        menu = self.createStandardContextMenu()
+        if (request is not None and menu is not None and
+                request.mediaType() == QWebEngineContextMenuRequest.MediaType.MediaTypeImage and
+                request.mediaUrl().isValid()):
+            image_url = request.mediaUrl().toString()
+            menu.addSeparator()
+            menu.addAction("Add to Downloader", lambda: self.addImageRequested.emit(image_url))
+        if menu is not None:
+            menu.exec(event.globalPos())
+            menu.deleteLater()
+            event.accept()
+        else:
+            super().contextMenuEvent(event)
 
 
 class PortalFade(QtWidgets.QWidget):
@@ -350,11 +458,37 @@ class ImagePreview(QtWidgets.QWidget):
     def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(parent)
         self._image = QtGui.QPixmap()
+        self._drag_path = ""
+        self._drag_start: QtCore.QPoint | None = None
         self.setMinimumHeight(235)
 
-    def set_image(self, image: QtGui.QImage) -> None:
+    def set_image(self, image: QtGui.QImage, path: str = "") -> None:
         self._image = QtGui.QPixmap.fromImage(image)
+        self._drag_path = path
         self.update()
+
+    def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:
+        if event.button() == QtCore.Qt.LeftButton and self._drag_path:
+            self._drag_start = event.position().toPoint()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QtGui.QMouseEvent) -> None:
+        if (self._drag_start is not None and event.buttons() & QtCore.Qt.LeftButton and
+                (event.position().toPoint() - self._drag_start).manhattanLength() >=
+                QtWidgets.QApplication.startDragDistance()):
+            self._drag_start = None
+            drag = QtGui.QDrag(self)
+            mime = QtCore.QMimeData()
+            mime.setData(PREVIEW_MIME, self._drag_path.encode("utf-8"))
+            drag.setMimeData(mime)
+            drag.setPixmap(self._image.scaled(96, 96, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
+            drag.exec(QtCore.Qt.CopyAction)
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QtGui.QMouseEvent) -> None:
+        self._drag_start = None
+        super().mouseReleaseEvent(event)
 
     def paintEvent(self, _event: QtGui.QPaintEvent) -> None:
         painter = QtGui.QPainter(self)
@@ -365,6 +499,76 @@ class ImagePreview(QtWidgets.QWidget):
             x = target.x() + (target.width() - scaled.width()) // 2
             y = target.y() + (target.height() - scaled.height()) // 2
             painter.drawPixmap(x, y, scaled)
+
+
+class DownloaderList(QtWidgets.QListWidget):
+    def startDrag(self, _supported_actions: QtCore.Qt.DropActions) -> None:
+        item = self.currentItem()
+        if item is None:
+            return
+        drag = QtGui.QDrag(self)
+        mime = QtCore.QMimeData()
+        mime.setData(PREVIEW_MIME, str(item.data(IMAGE_PATH_ROLE)).encode("utf-8"))
+        drag.setMimeData(mime)
+        drag.setPixmap(item.icon().pixmap(48, 48))
+        drag.exec(QtCore.Qt.CopyAction)
+
+
+class DownloaderIntake(QtWidgets.QLabel):
+    imageDropped = QtCore.Signal(object)
+
+    def __init__(self) -> None:
+        super().__init__("Drop an image here to preview")
+        self.setObjectName("DownloaderIntake")
+        self.setAccessibleName("Downloader image drop area")
+        self.setAlignment(QtCore.Qt.AlignCenter)
+        self.setWordWrap(True)
+        self.setMinimumHeight(66)
+        self.setAcceptDrops(True)
+
+    @staticmethod
+    def _accepts(mime: QtCore.QMimeData) -> bool:
+        if mime.hasImage() or mime.hasUrls():
+            return True
+        return mime.hasText() and QtCore.QUrl(mime.text().strip()).scheme().lower() in {"https", "http", "blob"}
+
+    def dragEnterEvent(self, event: QtGui.QDragEnterEvent) -> None:
+        if self._accepts(event.mimeData()):
+            event.acceptProposedAction()
+
+    def dragMoveEvent(self, event: QtGui.QDragMoveEvent) -> None:
+        if self._accepts(event.mimeData()):
+            event.acceptProposedAction()
+
+    def dropEvent(self, event: QtGui.QDropEvent) -> None:
+        if self._accepts(event.mimeData()):
+            self.imageDropped.emit(event.mimeData())
+            event.acceptProposedAction()
+
+
+class ArchiveDropTarget(QtWidgets.QLabel):
+    previewDropped = QtCore.Signal(str)
+
+    def __init__(self) -> None:
+        super().__init__("Save to Icon Images")
+        self.setObjectName("ArchiveDropTarget")
+        self.setAccessibleName("Save to Icon Images drop area")
+        self.setAlignment(QtCore.Qt.AlignCenter)
+        self.setMinimumHeight(54)
+        self.setAcceptDrops(True)
+
+    def dragEnterEvent(self, event: QtGui.QDragEnterEvent) -> None:
+        if event.mimeData().hasFormat(PREVIEW_MIME):
+            event.acceptProposedAction()
+
+    def dragMoveEvent(self, event: QtGui.QDragMoveEvent) -> None:
+        if event.mimeData().hasFormat(PREVIEW_MIME):
+            event.acceptProposedAction()
+
+    def dropEvent(self, event: QtGui.QDropEvent) -> None:
+        if event.mimeData().hasFormat(PREVIEW_MIME):
+            self.previewDropped.emit(bytes(event.mimeData().data(PREVIEW_MIME)).decode("utf-8"))
+            event.acceptProposedAction()
 
 
 class WindowDragLabel(QtWidgets.QLabel):
@@ -400,10 +604,10 @@ class WindowDragLabel(QtWidgets.QLabel):
 class ImageSiteHub(QtWidgets.QWidget):
     providerStateChanged = QtCore.Signal(str, str)
 
-    def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
+    def __init__(self, parent: QtWidgets.QWidget | None = None, *, sign_in_only: bool = False) -> None:
         super().__init__(parent)
-        if parent is not None:
-            self.setWindowFlags(QtCore.Qt.Tool | QtCore.Qt.FramelessWindowHint)
+        window_type = QtCore.Qt.Tool if parent is not None else QtCore.Qt.Window
+        self.setWindowFlags(window_type | QtCore.Qt.FramelessWindowHint)
         self._sites = dict(SITES)
         self._settings = QtCore.QSettings(APP_ORG, APP_NAME)
         self.setWindowTitle("IconForge · Image Generation")
@@ -431,8 +635,8 @@ class ImageSiteHub(QtWidgets.QWidget):
             QToolButton#SourceTile:checked { background: #193344; border-color: #36c9e8; }
             QToolButton#ReloadProvider { background: #182335; color: #dbe5f2; border: 1px solid #2b394d; border-radius: 9px; font-size: 18pt; }
             QToolButton#ReloadProvider:hover { background: #1b3445; border-color: #36c9e8; }
-            QToolButton#CloseHub { background: transparent; color: #dbe5f2; border: none; border-radius: 8px; font-size: 17pt; }
-            QToolButton#CloseHub:hover { background: #1b3445; }
+            QLabel#DownloaderIntake, QLabel#ArchiveDropTarget { background: #0b1423; color: #a9b8ca; border: 1px dashed #36c9e8; border-radius: 9px; padding: 8px; }
+            QLabel#ArchiveDropTarget { color: #dbe5f2; background: #193344; }
             QMenu { background: #101827; color: #dbe5f2; border: 1px solid #273348; }
             QMenu::item:selected { background: #1b3445; }
         """
@@ -442,9 +646,9 @@ class ImageSiteHub(QtWidgets.QWidget):
         self._views: dict[str, SiteView] = {}
         self._portal_frames: dict[str, PortalFrame] = {}
         self._site_frames: dict[str, QtWidgets.QStackedWidget] = {}
-        self._site_reveal_timers: dict[str, QtCore.QTimer] = {}
         self._site_probe_timers: dict[str, QtCore.QTimer] = {}
         self._site_generations: dict[str, int] = {}
+        self._site_load_ok: dict[str, bool] = {}
         self._site_errors: dict[str, str] = {}
         self._brief_phase = {"ChatGPT": "idle", "Gemini": "idle"}
         self._brief_completed_url = {"ChatGPT": "", "Gemini": ""}
@@ -455,6 +659,8 @@ class ImageSiteHub(QtWidgets.QWidget):
         self._image_scan_timers: dict[str, QtCore.QTimer] = {}
         self._seen_image_urls = {"ChatGPT": set(), "Gemini": set()}
         self._pending_image_urls = {"ChatGPT": set(), "Gemini": set()}
+        self._image_first_seen: dict[str, dict[str, str]] = {"ChatGPT": {}, "Gemini": {}}
+        self._image_origins_by_url: dict[str, dict[str, ImageOrigin]] = {"ChatGPT": {}, "Gemini": {}}
         self._image_scan_ready = {"ChatGPT": False, "Gemini": False}
         self._prepared_urls: dict[str, set[str]] = {}
         self._prepared_url_order: dict[str, list[str]] = {}
@@ -466,7 +672,7 @@ class ImageSiteHub(QtWidgets.QWidget):
         self._provider_state = {name: "idle" for name in (*self._sites, CODEX_LABEL)}
         self._provider_message: dict[str, str] = {}
         self._provider_started_at: dict[str, float] = {}
-        self._popups: list[SiteView] = []
+        self._popups: list[QtWidgets.QWidget] = []
         self._codex: IconImagePrototype | None = None
         self._chatgpt_site_signed_in = False
         self._sage_new_chat_started = False
@@ -495,12 +701,13 @@ class ImageSiteHub(QtWidgets.QWidget):
         self.downloads.statusChanged.connect(self._status)
         self.downloads.failed.connect(self._status)
         self.downloads.imageSaved.connect(self._on_preview_ready)
-        self.downloads.archiveReady.connect(self._on_drag_preview_ready)
         self.downloads.activeChanged.connect(self._download_active_changed)
 
         outer = QtWidgets.QVBoxLayout(self)
         outer.setContentsMargins(14, 14, 14, 12)
         outer.setSpacing(10)
+        self.title_bar = CustomTitleBar(self, chooser_title="Image Generator")
+        outer.addWidget(self.title_bar)
         columns = QtWidgets.QHBoxLayout()
         columns.setSpacing(12)
         outer.addLayout(columns, 1)
@@ -538,10 +745,7 @@ class ImageSiteHub(QtWidgets.QWidget):
             button.clicked.connect(lambda _checked=False, source=name: self._select_source(source))
             source_group.addButton(button)
             self.source_buttons[name] = button
-            if name == CODEX_LABEL:
-                source_grid.addWidget(button, 2, 0, 1, 2, QtCore.Qt.AlignHCenter)
-            else:
-                source_grid.addWidget(button, index // 2, index % 2, QtCore.Qt.AlignHCenter)
+            source_grid.addWidget(button, index // 2, index % 2, QtCore.Qt.AlignHCenter)
         rail_layout.addLayout(source_grid)
         rail_layout.addStretch(1)
         columns.addWidget(rail)
@@ -578,20 +782,15 @@ class ImageSiteHub(QtWidgets.QWidget):
         downloads_layout = QtWidgets.QVBoxLayout(downloads_rail)
         downloads_layout.setContentsMargins(12, 14, 12, 14)
         downloads_layout.setSpacing(9)
-        title = WindowDragLabel("Images")
+        title = WindowDragLabel("Downloader")
         title.setObjectName("Heading")
         downloads_header = QtWidgets.QHBoxLayout()
         downloads_header.addWidget(title)
         downloads_header.addStretch(1)
-        self.close_button = QtWidgets.QToolButton()
-        self.close_button.setObjectName("CloseHub")
-        self.close_button.setText("×")
-        self.close_button.setToolTip("Close image generator")
-        self.close_button.setAccessibleName("Close image generator")
-        self.close_button.setFixedSize(32, 32)
-        self.close_button.clicked.connect(self.close)
-        downloads_header.addWidget(self.close_button)
         downloads_layout.addLayout(downloads_header)
+        self.download_intake = DownloaderIntake()
+        self.download_intake.imageDropped.connect(self._on_image_dropped)
+        downloads_layout.addWidget(self.download_intake)
         self.preview = ImagePreview()
         self.preview.hide()
         downloads_layout.addWidget(self.preview)
@@ -601,11 +800,13 @@ class ImageSiteHub(QtWidgets.QWidget):
         self.preview_info.setWordWrap(True)
         self.preview_info.setSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Maximum)
         downloads_layout.addWidget(self.preview_info)
-        self.saved_list = QtWidgets.QListWidget()
+        self.saved_list = DownloaderList()
         self.saved_list.setObjectName("ImageNames")
         self.saved_list.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         self.saved_list.setTextElideMode(QtCore.Qt.ElideMiddle)
         self.saved_list.setIconSize(QtCore.QSize(48, 48))
+        self.saved_list.setDragEnabled(True)
+        self.saved_list.setDragDropMode(QtWidgets.QAbstractItemView.DragOnly)
         self.saved_list.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
         self.saved_list.hide()
         self.saved_list.currentItemChanged.connect(self._show_selected_image)
@@ -613,6 +814,9 @@ class ImageSiteHub(QtWidgets.QWidget):
         self.saved_list.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self.saved_list.customContextMenuRequested.connect(self._show_image_menu)
         downloads_layout.addWidget(self.saved_list, 1)
+        self.archive_drop_target = ArchiveDropTarget()
+        self.archive_drop_target.previewDropped.connect(self._on_archive_drop)
+        downloads_layout.addWidget(self.archive_drop_target)
         self.save_all_button = QtWidgets.QPushButton("Save All to Archive")
         self.save_all_button.clicked.connect(self._save_all_to_archive)
         self.save_all_button.hide()
@@ -628,10 +832,16 @@ class ImageSiteHub(QtWidgets.QWidget):
         self._close_timeout.setSingleShot(True)
         self._close_timeout.timeout.connect(self._close_after_timeout)
         last_source = str(self._settings.value(LAST_SOURCE_KEY, "ChatGPT") or "ChatGPT")
-        self._select_source(last_source if last_source in self.source_buttons else "ChatGPT", remember=False)
+        selected = last_source if last_source in self.source_buttons else "ChatGPT"
+        if sign_in_only:
+            self._source_name = selected
+            self.source_buttons[selected].setChecked(True)
+            self.source_title.setText(selected)
+        else:
+            self._select_source(selected, remember=False)
 
     def _apply_theme(self, *_args) -> None:
-        self.setStyleSheet(theme_css(self._theme_style))
+        self.setStyleSheet(theme_css(TITLE_BAR_CSS + self._theme_style))
         for name, button in getattr(self, "source_buttons", {}).items():
             button.setIcon(_site_icon(name))
         if hasattr(self, "_profile"):
@@ -640,11 +850,6 @@ class ImageSiteHub(QtWidgets.QWidget):
             )
         for name, frame in getattr(self, "_site_frames", {}).items():
             frame.setStyleSheet(theme_css("background: #080d19;"))
-            loading = frame.widget(0)
-            if isinstance(loading, QtWidgets.QLabel):
-                loading.setStyleSheet(
-                    f"background: {_site_surface(name)}; color: {_site_loading_text(name)};"
-                )
         for name, portal in getattr(self, "_portal_frames", {}).items():
             portal.set_surface(_site_surface(name))
             portal.update()
@@ -676,14 +881,19 @@ class ImageSiteHub(QtWidgets.QWidget):
             return
         self._provider_state[name] = state
         self._provider_message[name] = message
+        if name in PROVIDERS and state in {"ready", "sign_in"}:
+            set_sign_in_status(self._settings, name, "signed_in" if state == "ready" else "signed_out")
         if state == "ready" and name in self._preparation_retries:
             self._preparation_retries[name] = 0
         if state in {"ready", "sign_in", "error", "unverified"} and previous != state:
             elapsed = round((time.monotonic() - self._provider_started_at[name]) * 1000)
             GenLog.write_line("image_site_hub", f"{name} preparation: {state} after {elapsed} ms")
+        frame = self._site_frames.get(name)
+        if frame is not None:
+            loading = frame.widget(0)
+            if isinstance(loading, GeneratorLoading):
+                loading.set_state(state, message)
         self.providerStateChanged.emit(name, state)
-        if name in self._site_frames and state in {"ready", "sign_in", "unverified"}:
-            self._site_reveal_timers[name].start(250)
         if self._selected_source() != name:
             return
         self._show_selected_content()
@@ -692,10 +902,14 @@ class ImageSiteHub(QtWidgets.QWidget):
         name = self._selected_source()
         state = self._provider_state[name]
         if name == CODEX_LABEL:
+            if self._codex is None:
+                return
             self.content.setCurrentWidget(self._codex)
         else:
-            frame = self._site_frames[name]
-            frame.setCurrentWidget(frame.widget(0) if state in {"preparing", "error"} else self._portal_frames[name])
+            frame = self._site_frames.get(name)
+            portal = self._portal_frames.get(name)
+            if frame is None or portal is None:
+                return
             self.content.setCurrentWidget(frame)
         if state == "ready":
             self._status("")
@@ -706,7 +920,7 @@ class ImageSiteHub(QtWidgets.QWidget):
         elif state == "unverified":
             self._status(self._provider_message.get(name) or f"{name} loaded, but its image prompt could not be verified. Check the page or reload it.")
         else:
-            self._status(f"Still preparing {name}. You can wait, reload, or open it in Browser.")
+            self._status(self._provider_message.get(name) or f"Still preparing {name}. You can wait, reload, or open it in Browser.")
 
     def _codex_connection_changed(self, message: str) -> None:
         service = self._codex.service
@@ -751,15 +965,10 @@ class ImageSiteHub(QtWidgets.QWidget):
         frame.setStyleSheet(theme_css("background: #080d19;"))
         view = SiteView(self._profile, name, self._popups, frame)
         portal = PortalFrame(view, surface, name == "Microsoft Designer", frame)
-        loading = QtWidgets.QLabel(f"Loading {name}...")
-        loading.setAlignment(QtCore.Qt.AlignCenter)
-        loading.setStyleSheet(f"background: {surface}; color: {_site_loading_text(name)};")
+        loading = GeneratorLoading(name, frame, ASSETS_DIR / SITE_ICONS[name])
         frame.addWidget(loading)
         frame.addWidget(portal)
         frame.setCurrentWidget(loading)
-        reveal_timer = QtCore.QTimer(frame)
-        reveal_timer.setSingleShot(True)
-        reveal_timer.timeout.connect(lambda source=name: self._reveal_site(source))
         probe_timer = QtCore.QTimer(frame)
         probe_timer.setInterval(1000)
         probe_timer.timeout.connect(lambda source=name: self._probe_site(source))
@@ -773,12 +982,16 @@ class ImageSiteHub(QtWidgets.QWidget):
         view.page().imageDragEnded.connect(
             lambda url, source=name: self._on_site_image_drag_ended(source, url)
         )
+        view.addImageRequested.connect(
+            lambda url, source=name: self._stage_site_image(source, url)
+        )
+        view.popupCreated.connect(lambda popup, source=name: self._register_popup(source, popup))
         self._views[name] = view
         self._portal_frames[name] = portal
         self._site_frames[name] = frame
-        self._site_reveal_timers[name] = reveal_timer
         self._site_probe_timers[name] = probe_timer
         self._site_generations[name] = 0
+        self._site_load_ok[name] = False
         self._site_errors[name] = ""
         if name in self._brief_phase:
             timer = QtCore.QTimer(frame)
@@ -791,7 +1004,11 @@ class ImageSiteHub(QtWidgets.QWidget):
             self._image_scan_timers[name] = image_timer
         self.content.addWidget(frame)
         view.load(QtCore.QUrl(self._sites[name]))
-        QtCore.QTimer.singleShot(20_000, lambda source=name: self._site_start_timeout(source))
+        if self._site_generations[name] == 0:
+            QtCore.QTimer.singleShot(
+                20_000,
+                lambda source=name, route=view.url().toString(): self._site_start_timeout(source, 0, route),
+            )
 
     def _select_source(self, name: str, *, remember: bool = True) -> None:
         self._source_name = name
@@ -852,16 +1069,23 @@ class ImageSiteHub(QtWidgets.QWidget):
 
     def _site_loading(self, source: str) -> None:
         self._site_generations[source] += 1
+        generation = self._site_generations[source]
+        self._site_load_ok[source] = False
+        self._site_errors[source] = ""
+        QtCore.QTimer.singleShot(
+            20_000,
+            lambda name=source, current=generation, route=self._views[source].url().toString():
+                self._site_start_timeout(name, current, route),
+        )
         if source in self._image_scan_timers:
             self._image_scan_timers[source].stop()
             self._image_scan_ready[source] = False
             self._seen_image_urls[source].clear()
             self._pending_image_urls[source].clear()
-        self._site_reveal_timers[source].stop()
         self._site_probe_timers[source].stop()
         if source in self._brief_timers:
             self._brief_timers[source].stop()
-        self._set_provider_state(source, "preparing")
+        self._set_provider_state(source, "preparing", f"Loading {source}...")
 
     def _site_load_changed(self, source: str, info: QWebEngineLoadingInfo) -> None:
         if info.status() == QWebEngineLoadingInfo.LoadStatus.LoadFailedStatus:
@@ -876,6 +1100,8 @@ class ImageSiteHub(QtWidgets.QWidget):
     def _site_renderer_terminated(self, source: str, status: object, code: int) -> None:
         if source in self._image_scan_timers:
             self._image_scan_timers[source].stop()
+        frame = self._site_frames[source]
+        frame.setCurrentWidget(frame.widget(0))
         detail = f"{source}'s browser process stopped ({status.name}, code {code}). Reload the page or open it in Browser."
         self._site_errors[source] = detail
         GenLog.write_line("image_site_hub", detail, level="error")
@@ -883,7 +1109,9 @@ class ImageSiteHub(QtWidgets.QWidget):
 
     def _site_loaded(self, source: str, ok: bool) -> None:
         if ok:
+            self._site_load_ok[source] = True
             self._site_errors[source] = ""
+            self._reveal_site(source)
             self._match_portal_surface(source)
             self._site_probe_timers[source].start()
             if source in self._brief_phase and self._brief_phase[source] == "submitted":
@@ -897,26 +1125,34 @@ class ImageSiteHub(QtWidgets.QWidget):
             generation = self._site_generations[source]
             QtCore.QTimer.singleShot(
                 15_000,
-                lambda name=source, current=generation: self._site_unverified_if_pending(name, current),
+                lambda name=source, current=generation, route=self._views[source].url().toString():
+                    self._site_unverified_if_pending(name, current, route),
             )
         else:
-            self._site_frames[source].widget(0).setText(f"Could not load {source}.")
+            frame = self._site_frames[source]
+            frame.setCurrentWidget(frame.widget(0))
             reason = self._site_errors[source] or "The provider page failed to load."
             detail = f"{source} could not load: {reason} Reload or open it in Browser."
             GenLog.write_line("image_site_hub", detail, level="warning")
             self._set_provider_state(source, "error", detail)
 
-    def _site_unverified_if_pending(self, source: str, generation: int) -> None:
-        if generation != self._site_generations[source]:
+    def _site_unverified_if_pending(self, source: str, generation: int, route: str | None = None) -> None:
+        if (generation != self._site_generations[source] or
+                (route is not None and route != self._views[source].url().toString())):
             return
         if self._provider_state[source] == "preparing" and self._brief_phase.get(source) == "idle":
             reason = f" Last page error: {self._site_errors[source]}" if self._site_errors[source] else ""
             self._set_provider_state(source, "unverified", f"Could not find {source}'s image prompt.{reason} Reload the page or open it in Browser.")
 
-    def _site_start_timeout(self, source: str) -> None:
+    def _site_start_timeout(self, source: str, generation: int, route: str | None = None) -> None:
+        if (generation != self._site_generations.get(source) or
+                (route is not None and route != self._views[source].url().toString())):
+            return
         if self._provider_state[source] == "preparing" and self._brief_phase.get(source, "idle") == "idle":
             reason = f" Last page error: {self._site_errors[source]}" if self._site_errors[source] else ""
-            self._set_provider_state(source, "unverified", f"{source} has not finished loading.{reason} Check the page, sign in, or reload it.")
+            detail = "loaded, but its image controls are still unavailable" if self._site_load_ok[source] else "has not finished loading"
+            message = f"{source} {detail}.{reason} Check the page, sign in, or reload it."
+            self._set_provider_state(source, "unverified", message)
 
     def _probe_site(self, source: str) -> None:
         if source == "ChatGPT":
@@ -930,7 +1166,6 @@ class ImageSiteHub(QtWidgets.QWidget):
             const provider = {json.dumps(source)};
             const expected = {{
                 'Gemini': 'gemini.google.com',
-                'Adobe Firefly': 'firefly.adobe.com',
                 'Microsoft Designer': 'designer.microsoft.com'
             }}[provider];
             if (location.hostname !== expected) return 'sign_in';
@@ -944,6 +1179,15 @@ class ImageSiteHub(QtWidgets.QWidget):
                     (element.getAttribute('aria-label') || '') + ' ' + element.textContent.trim()
                 ) || /login|signin/i.test(element.getAttribute('href') || '')));
             if (signIn) return 'sign_in';
+            if (provider === 'Microsoft Designer') {{
+                const controls = Array.from(document.querySelectorAll('button, [role="button"]')).filter(visible);
+                const account = controls.some(element => /account manager|profile|avatar/i.test(
+                    (element.getAttribute('aria-label') || '') + ' ' +
+                    (element.getAttribute('data-testid') || '')));
+                const imageEntry = controls.some(element => /^(images|create with ai)$/i.test(
+                    (element.innerText || '').trim()));
+                if (account && imageEntry) return 'ready';
+            }}
             const prompt = Array.from(document.querySelectorAll(
                 'textarea, [contenteditable="true"][role="textbox"], input[placeholder*="prompt" i], ' +
                 'input[aria-label*="prompt" i], input[placeholder*="describe" i]'
@@ -955,14 +1199,20 @@ class ImageSiteHub(QtWidgets.QWidget):
         }})()"""
         view.page().runJavaScript(
             script,
-            lambda result, name=source, current=generation: self._on_site_probe(name, current, result),
+            lambda result, name=source, current=generation, route=view.url().toString():
+                self._on_site_probe(name, current, route, result),
         )
 
-    def _on_site_probe(self, source: str, generation: int, result: object) -> None:
-        if source not in self._views or generation != self._site_generations[source]:
+    def _on_site_probe(self, source: str, generation: int, route: str, result: object) -> None:
+        if (source not in self._views or generation != self._site_generations[source] or
+                route != self._views[source].url().toString()):
             return
         if result == "ready":
+            if source == "ChatGPT" and self._brief_phase[source] != "complete":
+                self._probe_chatgpt_sign_in()
+                return
             if source == "Gemini" and self._brief_phase[source] != "complete":
+                set_sign_in_status(self._settings, source, "signed_in")
                 if self._brief_phase[source] == "idle":
                     if self._conversation_key(source, self._views[source].url()):
                         self._probe_existing_brief(source)
@@ -986,11 +1236,36 @@ class ImageSiteHub(QtWidgets.QWidget):
             const selector = {json.dumps(source)} === 'ChatGPT'
                 ? '[data-testid="generated-image-gallery"] img, [data-message-author-role="assistant"] img, article[data-testid^="conversation-turn-"] img'
                 : 'model-response img, .model-response img, [data-message-author-role="model"] img';
-            return JSON.stringify([...new Set(Array.from(document.querySelectorAll(selector))
-                .filter(image => image.complete && image.naturalWidth >= 256 && image.naturalHeight >= 256 &&
-                    !image.closest('[data-message-author-role="user"], [data-user-message-bubble], user-query'))
-                .map(image => image.currentSrc || image.src)
-                .filter(url => /^https?:|^blob:/i.test(url)))]);
+            const promptSelector = {json.dumps(source)} === 'ChatGPT'
+                ? '[data-message-author-role="user"]'
+                : 'user-query, [data-user-message-bubble]';
+            const setupOnly = {json.dumps(OPENING_BRIEF.rsplit("\n\n", 1)[-1])};
+            const userMessages = Array.from(document.querySelectorAll(promptSelector));
+            const promptFor = image => {{
+                let prompt = '';
+                for (const message of userMessages) {{
+                    if (!(message.compareDocumentPosition(image) & Node.DOCUMENT_POSITION_FOLLOWING))
+                        continue;
+                    const body = message.querySelector('[data-testid="user-message"], .query-text, .whitespace-pre-wrap') || message;
+                    prompt = String(body.innerText || '').trim();
+                    if (prompt.includes(setupOnly)) prompt = '';
+                }}
+                return prompt;
+            }};
+            const images = new Map();
+            for (const image of document.querySelectorAll(selector)) {{
+                if (!image.complete || image.naturalWidth < 256 || image.naturalHeight < 256 ||
+                    image.closest('[data-message-author-role="user"], [data-user-message-bubble], user-query'))
+                    continue;
+                const url = image.currentSrc || image.src;
+                if (!/^https?:|^blob:/i.test(url)) continue;
+                images.set(url, {{
+                    url,
+                    title: image.alt || image.title || image.closest('figure')?.querySelector('figcaption')?.innerText || '',
+                    prompt: promptFor(image)
+                }});
+            }}
+            return JSON.stringify(Array.from(images.values()));
         }})()"""
         self._views[source].page().runJavaScript(
             script,
@@ -1010,14 +1285,30 @@ class ImageSiteHub(QtWidgets.QWidget):
                 (generation is not None and generation != self._site_generations[source]) or
                 (page_url is not None and page_url != self._views[source].url().toString())):
             return
-        current = {url for url in urls if isinstance(url, str)}
+        current: dict[str, dict[str, str]] = {}
+        for entry in urls:
+            if isinstance(entry, str):
+                current[entry] = {"url": entry}
+            elif isinstance(entry, dict) and isinstance(entry.get("url"), str):
+                current[entry["url"]] = entry
+        for url in current:
+            self._image_first_seen[source].setdefault(url, utc_now())
+            entry = current[url]
+            self._image_origins_by_url[source][url] = ImageOrigin(
+                source, str(entry.get("prompt") or ""), str(entry.get("title") or ""),
+                self._image_first_seen[source][url],
+            )
+        current_urls = set(current)
         if not self._image_scan_ready[source]:
-            self._pending_image_urls[source] = current
+            self._pending_image_urls[source] = current_urls
             self._image_scan_ready[source] = True
             return
-        new_urls = current - self._seen_image_urls[source]
+        new_urls = current_urls - self._seen_image_urls[source]
         for url in new_urls & self._pending_image_urls[source]:
-            self._views[source].page().download(QtCore.QUrl(url))
+            self.downloads.stage_url(
+                self._views[source].page(), QtCore.QUrl(url),
+                origin=self._image_origins_by_url[source][url],
+            )
             self._seen_image_urls[source].add(url)
         self._pending_image_urls[source] = new_urls - self._seen_image_urls[source]
 
@@ -1025,10 +1316,17 @@ class ImageSiteHub(QtWidgets.QWidget):
         self._site_frames[source].setCurrentWidget(self._portal_frames[source])
 
     def _site_url_changed(self, source: str, url: QtCore.QUrl) -> None:
+        QtCore.QTimer.singleShot(
+            20_000,
+            lambda name=source, current=self._site_generations[source], route=url.toString():
+                self._site_start_timeout(name, current, route),
+        )
         if source in self._brief_phase:
             self._image_scan_ready[source] = False
             self._seen_image_urls[source].clear()
             self._pending_image_urls[source].clear()
+            self._image_first_seen[source].clear()
+            self._image_origins_by_url[source].clear()
             self._existing_brief_attempts[source] = 0
             key = self._conversation_key(source, url)
             if key and key in self._prepared_urls[source]:
@@ -1316,6 +1614,9 @@ class ImageSiteHub(QtWidgets.QWidget):
     def _on_chatgpt_sign_in_probe(self, state: object) -> None:
         if state in {"signed_in", "sign_in"}:
             self._chatgpt_site_signed_in = state == "signed_in"
+            set_sign_in_status(
+                self._settings, "ChatGPT", "signed_in" if state == "signed_in" else "signed_out"
+            )
         if state == "sign_in":
             self._set_provider_state("ChatGPT", "sign_in", "Sign in to ChatGPT in the page to continue.")
         elif state == "signed_in":
@@ -1512,17 +1813,18 @@ class ImageSiteHub(QtWidgets.QWidget):
 
     def _import_codex_result(self, path: str) -> None:
         try:
-            self.downloads.import_file("Codex", Path(path))
+            self.downloads.import_file(
+                "Codex", Path(path),
+                origin=ImageOrigin("Codex", prompt=self._last_codex_prompt, observed_at_utc=utc_now()),
+            )
         except (OSError, ValueError) as exc:
             self._status(f"Codex generated an image, but its preview could not be prepared: {exc}")
 
     def _add_result(self, provider: str, path: Path) -> QtWidgets.QListWidgetItem:
-        prompt = self._last_codex_prompt if provider == CODEX_LABEL else ""
-        name = _suggest_name(provider, path, prompt)
         item = QtWidgets.QListWidgetItem()
         item.setData(IMAGE_PATH_ROLE, str(path))
         item.setData(IMAGE_SAVED_ROLE, "")
-        item.setData(IMAGE_NAME_ROLE, name)
+        item.setData(IMAGE_NAME_ROLE, path.stem)
         item.setData(IMAGE_PROVIDER_ROLE, provider)
         thumbnail = QtGui.QImageReader(str(path)).read()
         if not thumbnail.isNull():
@@ -1559,40 +1861,129 @@ class ImageSiteHub(QtWidgets.QWidget):
         self._update_save_all_button()
         self._status(f"Image ready from {provider}. Save it to Archive when you are ready.")
 
-    def _on_site_image_drag_ended(self, source: str, url: str) -> None:
-        if not self.downloads_rail.rect().contains(
-            self.downloads_rail.mapFromGlobal(QtGui.QCursor.pos())
-        ):
+    def _register_popup(self, source: str, popup: SiteView) -> None:
+        popup.addImageRequested.connect(
+            lambda url, view=popup: self._stage_site_image(source, url, view)
+        )
+        popup.page().imageDragEnded.connect(
+            lambda url, view=popup: self._on_site_image_drag_ended(source, url, view)
+        )
+        popup.popupCreated.connect(lambda next_popup: self._register_popup(source, next_popup))
+
+    def _stage_site_image(self, source: str, url: str, view: SiteView | None = None) -> None:
+        view = view or self._views.get(source)
+        if view is None:
+            self._status("Select an image provider before adding an image.")
+            return
+        origin = self._image_origins_by_url.get(source, {}).get(url)
+        if origin is not None:
+            self._stage_site_image_with_origin(source, url, view.page(), origin)
+            return
+        page = view.page()
+        page_url = page.url().toString()
+        script = ("(() => { const context = window.__iconForgeImageOrigin?.(" + json.dumps(url) +
+                  "); return context ? JSON.stringify(context) : ''; })()")
+        page.runJavaScript(
+            script, int(QWebEngineScript.ScriptWorldId.ApplicationWorld),
+            lambda result: self._on_site_image_context(source, url, view, page, page_url, result),
+        )
+
+    def _on_site_image_context(
+        self, source: str, url: str, view: SiteView, page: QWebEnginePage, page_url: str, result: object
+    ) -> None:
+        try:
+            current_page = view.page()
+            current_url = page.url().toString()
+        except RuntimeError:
+            return
+        if current_page is not page or current_url != page_url:
             return
         try:
-            started = self.downloads.download_to_archive(self._views[source].page(), QtCore.QUrl(url))
+            context = json.loads(result) if isinstance(result, str) and result else None
+        except json.JSONDecodeError:
+            context = None
+        origin = None
+        if isinstance(context, dict):
+            origin = ImageOrigin(
+                source, str(context.get("prompt") or ""), str(context.get("title") or ""),
+                str(context.get("observed_at_utc") or ""),
+            )
+        self._stage_site_image_with_origin(source, url, page, origin)
+
+    def _stage_site_image_with_origin(
+        self, source: str, url: str, page: QWebEnginePage, origin: ImageOrigin | None
+    ) -> None:
+        try:
+            started = self.downloads.stage_url(page, QtCore.QUrl(url), origin=origin)
         except ValueError as exc:
             self._status(str(exc))
         else:
-            self._status(f"Downloading {source} image to Archive..." if started else "Image download already in progress.")
+            self._status(f"Adding {source} image to Downloader..." if started else "This image is already in Downloader.")
 
-    def _on_drag_preview_ready(self, provider: str, path_text: str) -> None:
+    def _on_site_image_drag_ended(self, source: str, url: str, view: SiteView | None = None) -> None:
+        if not self.download_intake.rect().contains(self.download_intake.mapFromGlobal(QtGui.QCursor.pos())):
+            return
+        self._stage_site_image(source, url, view)
+
+    def _on_image_dropped(self, mime: QtCore.QMimeData) -> None:
+        urls = mime.urls() if mime.hasUrls() else []
+        if urls:
+            for url in urls:
+                if url.isLocalFile():
+                    try:
+                        self.downloads.import_file("Dropped", Path(url.toLocalFile()))
+                    except (OSError, ValueError) as exc:
+                        self._status(f"Could not add dropped image: {exc}")
+                else:
+                    self._stage_dropped_url(url)
+            return
+        if mime.hasImage():
+            value = mime.imageData()
+            image = value.toImage() if isinstance(value, QtGui.QPixmap) else value
+            if not isinstance(image, QtGui.QImage):
+                self._status("The dropped image could not be decoded.")
+                return
+            try:
+                self.downloads.import_image("Dropped", image)
+            except (OSError, ValueError) as exc:
+                self._status(f"Could not add dropped image: {exc}")
+            return
+        if mime.hasText():
+            self._stage_dropped_url(QtCore.QUrl(mime.text().strip()))
+
+    def _stage_dropped_url(self, url: QtCore.QUrl) -> None:
+        source = self._selected_source()
+        view = self._views.get(source)
+        if view is not None:
+            self._stage_site_image(source, url.toString())
+            return
+        if not hasattr(self, "_drop_page"):
+            self._drop_page = QWebEnginePage(self._profile, self)
+            self._drop_page.setProperty("imageProvider", "Dropped")
+        page = self._drop_page
+        try:
+            started = self.downloads.stage_url(page, url)
+        except ValueError as exc:
+            self._status(str(exc))
+        else:
+            self._status("Adding image to Downloader..." if started else "This image is already in Downloader.")
+
+    def _on_archive_drop(self, path_text: str) -> None:
         item = next(
             (self.saved_list.item(index) for index in range(self.saved_list.count())
              if self.saved_list.item(index).data(IMAGE_PATH_ROLE) == path_text),
             None,
         )
         if item is None:
-            self._status("Downloaded image could not be found in Images.")
+            self._status("This image is not in Downloader.")
             return
-        name = str(item.data(IMAGE_NAME_ROLE))
-        if re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}(?: \(\d+\))?", name, flags=re.IGNORECASE):
-            name = f"{provider} image"
-        for number in range(1, 1001):
-            candidate = name if number == 1 else f"{name} ({number})"
-            try:
-                self._save_item_to_archive(item, candidate)
-            except FileExistsError:
-                continue
-            except (OSError, RuntimeError, ValueError) as exc:
-                self._status(f"Image downloaded, but could not be saved to Archive: {exc}")
+        if item.data(IMAGE_SAVED_ROLE):
+            self._status("This image is already saved to Icon Images.")
             return
-        self._status("Image downloaded, but Archive has too many images with this name.")
+        try:
+            self._save_item_to_archive(item, str(item.data(IMAGE_NAME_ROLE)))
+        except (OSError, RuntimeError, ValueError) as exc:
+            self._status(f"Could not save image to Icon Images: {exc}")
 
     def _show_selected_image(self, current: QtWidgets.QListWidgetItem | None, _previous: QtWidgets.QListWidgetItem | None) -> None:
         if current is None:
@@ -1605,7 +1996,7 @@ class ImageSiteHub(QtWidgets.QWidget):
             self.preview.set_image(QtGui.QImage())
             self.preview_info.setText(f"Could not preview {path.name}: {reader.errorString()}")
             return
-        self.preview.set_image(image)
+        self.preview.set_image(image, str(path))
         self.preview.show()
         state = "Saved to Archive" if current.data(IMAGE_SAVED_ROLE) else "Unsaved preview"
         self.preview_info.setText(f"{image.width()} × {image.height()} pixels · {state}")
@@ -1614,21 +2005,27 @@ class ImageSiteHub(QtWidgets.QWidget):
         saved = item.data(IMAGE_SAVED_ROLE)
         if saved:
             return Path(saved)
-        destination = self.downloads.save_to_archive(Path(item.data(IMAGE_PATH_ROLE)), name)
+        destination = self.downloads.save_to_archive(
+            Path(item.data(IMAGE_PATH_ROLE)), name,
+            auto_name=name == str(item.data(IMAGE_NAME_ROLE)),
+        )
         item.setData(IMAGE_SAVED_ROLE, str(destination))
         item.setData(IMAGE_NAME_ROLE, destination.stem)
         self._update_result_item(item)
         self._update_save_all_button()
         if item is self.saved_list.currentItem():
             self._show_selected_image(item, None)
-        self._status(f"Saved to Archive: {destination.name}")
+        if self.downloads.last_metadata_error:
+            self._status(f"Saved {destination.name}, but its prompt details could not be stored: "
+                         f"{self.downloads.last_metadata_error}")
+        else:
+            self._status(f"Saved to Archive: {destination.name}")
         return destination
 
     def _open_image_preview(self, item: QtWidgets.QListWidgetItem) -> None:
-        dialog = QtWidgets.QDialog(self)
-        dialog.setWindowTitle("Image preview")
+        dialog = ThemedDialog("Image preview", self)
         dialog.resize(560, 520)
-        layout = QtWidgets.QVBoxLayout(dialog)
+        layout = dialog.content_layout
         image = ImagePreview(dialog)
         image.setMinimumHeight(340)
         path = Path(item.data(IMAGE_PATH_ROLE))
@@ -1708,10 +2105,9 @@ class ImageSiteHub(QtWidgets.QWidget):
         if not items:
             self._status("All images are already saved to Archive.")
             return
-        dialog = QtWidgets.QDialog(self)
-        dialog.setWindowTitle("Save images to Archive")
+        dialog = ThemedDialog("Save images to Archive", self)
         dialog.resize(530, min(640, 180 + len(items) * 70))
-        layout = QtWidgets.QVBoxLayout(dialog)
+        layout = dialog.content_layout
         layout.addWidget(QtWidgets.QLabel("Review each image name before saving."))
         scroll = QtWidgets.QScrollArea()
         scroll.setWidgetResizable(True)
@@ -1759,7 +2155,7 @@ class ImageSiteHub(QtWidgets.QWidget):
                 else:
                     name_edit.setEnabled(False)
                     result.setText("Saved to Archive")
-                    result.setStyleSheet(theme_css("color: #77d9cf;"))
+                    result.setStyleSheet(f"color: {theme_manager().colors.success};")
                     result.show()
             if not remaining:
                 dialog.accept()
@@ -1831,12 +2227,118 @@ class ImageSiteHub(QtWidgets.QWidget):
 
 def main() -> int:
     app = QtWidgets.QApplication(sys.argv)
-    app.styleHints().setColorScheme(QtCore.Qt.ColorScheme.Dark)
-    window = ImageSiteHub()
+    appearance = theme_manager().appearance
+    app.styleHints().setColorScheme(
+        QtCore.Qt.ColorScheme.Light if appearance == "Light" else QtCore.Qt.ColorScheme.Dark
+    )
+    sign_in_only = "--sign-in" in sys.argv
+    initial_provider = "ChatGPT"
+    if "--provider" in sys.argv:
+        index = sys.argv.index("--provider") + 1
+        if index < len(sys.argv) and sys.argv[index] in PROVIDERS:
+            initial_provider = sys.argv[index]
+    window = ImageSiteHub(sign_in_only=sign_in_only)
     available = app.primaryScreen().availableGeometry()
     window.resize(min(window.width(), available.width() - 32), min(window.height(), available.height() - 32))
     window.move(available.center() - window.rect().center())
-    window.show()
+    panel = None
+
+    def show_sign_in(provider: str = "ChatGPT") -> None:
+        nonlocal panel
+        from GenSignInPanel import SignInPanel
+
+        if panel is None:
+            panel = SignInPanel(
+                dict(SITES),
+                lambda name, parent, popups: SiteView(window._profile, name, popups, parent),
+                window,
+            )
+            panel.authenticated.connect(
+                lambda name: window._views[name].reload()
+                if name in window._views and window.provider_state(name) == "sign_in" else None
+            )
+            panel.closed.connect(lambda: app.quit() if not window.isVisible() else None)
+            panel.move(available.center() - panel.rect().center())
+            window._sign_in_panel = panel
+        panel.focus_provider(provider if provider in SIGN_IN_PROVIDERS else "ChatGPT")
+        panel.show()
+        panel.raise_()
+        panel.activateWindow()
+
+    def show_generator() -> None:
+        offer_sign_in = should_offer_sign_in(window._settings)
+        first_area_open = not window._settings.value(GENERATOR_OPENED_KEY, False, type=bool)
+        if panel is not None:
+            panel.hide()
+        if not window._views:
+            window._select_source(window._source_name, remember=False)
+        window._ensure_site("ChatGPT")
+        window._ensure_site("Gemini")
+        if not window.isVisible():
+            overlay = StartupOverlay(window, appearance)
+            window.startup_overlay = overlay
+            if offer_sign_in:
+                overlay.finished.connect(
+                    lambda: show_sign_in()
+                    if window.isVisible() and (first_area_open or should_offer_sign_in(window._settings)) else None
+                )
+            overlay.show()
+            window.show()
+            overlay.sync_geometry()
+            overlay.start()
+        elif offer_sign_in:
+            QtCore.QTimer.singleShot(0, show_sign_in)
+        window.raise_()
+        window.activateWindow()
+        window._settings.setValue(GENERATOR_OPENED_KEY, True)
+        window._settings.sync()
+
+    server = QLocalServer(app)
+    if not server.listen(CONTROL_SERVER_NAME):
+        GenLog.write_line("image_site_hub", "Generator control channel unavailable", level="warning")
+
+    def accept_commands() -> None:
+        while server.hasPendingConnections():
+            socket = server.nextPendingConnection()
+            socket.disconnected.connect(socket.deleteLater)
+
+            def receive(target=socket) -> None:
+                if not target.canReadLine():
+                    return
+                parts = bytes(target.readLine()).decode("utf-8", errors="ignore").strip().split("\t", 1)
+                action = parts[0]
+                provider = parts[1] if len(parts) > 1 else "ChatGPT"
+                if action == "generator":
+                    QtCore.QTimer.singleShot(0, show_generator)
+                elif action == "sign_in" and provider in PROVIDERS:
+                    QtCore.QTimer.singleShot(0, lambda source=provider: show_sign_in(source))
+                else:
+                    target.write(b"error\n")
+                    target.flush()
+                    target.disconnectFromServer()
+                    return
+                target.write(b"ok\n")
+                target.flush()
+                target.disconnectFromServer()
+
+            socket.readyRead.connect(receive)
+            if socket.bytesAvailable():
+                receive()
+
+    server.newConnection.connect(accept_commands)
+    if sign_in_only:
+        show_sign_in(initial_provider)
+    else:
+        show_generator()
+
+    def cleanup() -> None:
+        active_overlay = getattr(window, "startup_overlay", None)
+        if active_overlay is not None:
+            active_overlay.stop()
+        if panel is not None:
+            panel.close()
+
+    app.aboutToQuit.connect(cleanup)
     return app.exec()
 
 

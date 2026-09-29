@@ -21,12 +21,16 @@ from typing import Callable, Optional, Iterable
 
 from StateMemory import StateMemory
 from AppTheme import APPEARANCES, theme_css, theme_manager
+from GenSignInState import APP_OPENED_KEY, SIGN_IN_PROVIDERS, send_generator_command, should_offer_sign_in, sign_in_status
+from AppAmbient import AppAmbientRoot
+from AppTitleBar import CustomTitleBar, TITLE_BAR_CSS
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
 
 import Gen2 as eng
 import GenOps
+from GenFolderIcons import ensure_iconmaker_folder_icons
 from AppIdentity import (
     APP_DISPLAY_NAME,
     APP_DISPLAY_VERSION,
@@ -37,6 +41,7 @@ from AppIdentity import (
 )
 from GenArchive import ArchiveSidebar, ArchiveEntrySnapshot, THUMB_SIZE
 from ArchiveImageViewer import ArchiveImageViewer
+from GeneratedImageInfo import copy_archive_records, copy_record, delete_record, move_record
 
 from Gen3 import scan_and_convert
 from Gen4 import get_app_icon
@@ -48,13 +53,12 @@ SAGE_TOOLTIP = "Open image generation tools."
 APP_DIR = Path(__file__).resolve().parent
 ASSETS_DIR = APP_DIR / "assets"
 
-# These assets define the branded title artwork and the prominent Sage shortcut.
+# These assets define the prominent Sage shortcut.
 SAGE_BUTTON_IMAGE_PATH = ASSETS_DIR / "IcoSage.png"
 SAGE_BUTTON_IMAGE_LIGHT_PATH = ASSETS_DIR / "IcoSageLight.png"
-APP_BRANDING_IMAGE_PATH = ASSETS_DIR / "iconner.png"
 
-# Keep the Sage artwork legible within the compact shortcut card.
-HERO_ICON_SIZE = 164
+# Keep the Sage artwork legible within the shortcut card.
+HERO_ICON_SIZE = 213
 SAGE_BTN_SIZE = HERO_ICON_SIZE
 COMPLETION_DISPLAY_MS = 8000
 
@@ -221,6 +225,34 @@ class ImageSettingsComboBox(QtWidgets.QComboBox):
         painter.drawPath(chevron)
 
 
+class RecursiveCheckBox(QtWidgets.QCheckBox):
+    def paintEvent(self, event: QtGui.QPaintEvent) -> None:
+        option = QtWidgets.QStyleOptionButton()
+        self.initStyleOption(option)
+        painter = QtWidgets.QStylePainter(self)
+        painter.drawControl(QtWidgets.QStyle.CE_CheckBoxLabel, option)
+
+        rect = self.style().subElementRect(QtWidgets.QStyle.SE_CheckBoxIndicator, option, self).adjusted(0, 0, -1, -1)
+        colors = theme_manager().colors
+        dark = theme_manager().appearance == "Dark"
+        accent = QtGui.QColor(colors.accent if self.isEnabled() else colors.disabled)
+        painter.setRenderHint(QtGui.QPainter.Antialiasing)
+        painter.setPen(QtGui.QPen(accent, 1.5))
+        painter.setBrush(accent if self.isChecked() else QtGui.QColor(colors.field))
+        painter.drawRoundedRect(QtCore.QRectF(rect), 4, 4)
+        if self.isChecked():
+            mark = QtGui.QColor("#000000" if dark else "#ffffff")
+            painter.setPen(QtGui.QPen(mark, 2.4, QtCore.Qt.SolidLine, QtCore.Qt.RoundCap, QtCore.Qt.RoundJoin))
+            check = QtGui.QPainterPath(QtCore.QPointF(rect.x() + rect.width() * 0.22, rect.y() + rect.height() * 0.52))
+            check.lineTo(rect.x() + rect.width() * 0.43, rect.y() + rect.height() * 0.73)
+            check.lineTo(rect.x() + rect.width() * 0.79, rect.y() + rect.height() * 0.27)
+            painter.drawPath(check)
+        if option.state & QtWidgets.QStyle.State_HasFocus:
+            painter.setPen(QtGui.QPen(accent, 1, QtCore.Qt.DotLine))
+            painter.setBrush(QtCore.Qt.NoBrush)
+            painter.drawRoundedRect(QtCore.QRectF(self.rect().adjusted(0, 0, -1, -1)), 4, 4)
+
+
 class ScaledAssetLabel(QtWidgets.QLabel):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -257,138 +289,267 @@ class ScaledAssetLabel(QtWidgets.QLabel):
         )
 
 
-class CustomTitleBar(QtWidgets.QFrame):
-    def __init__(self, parent=None, *, native_window_controls: bool = False):
+class ImageThumbnailProvider(QtWidgets.QFileIconProvider):
+    def __init__(self) -> None:
+        super().__init__()
+        self._cache: dict[tuple[str, int, int], QtGui.QIcon] = {}
+
+    def icon(self, info: QtCore.QFileInfo | QtWidgets.QFileIconProvider.IconType) -> QtGui.QIcon:
+        if not isinstance(info, QtCore.QFileInfo) or not info.isFile() or info.suffix().lower() not in {
+            "png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff", "svg"
+        }:
+            return super().icon(info)
+        key = (info.absoluteFilePath(), info.lastModified().toMSecsSinceEpoch(), info.size())
+        if key in self._cache:
+            return self._cache[key]
+        reader = QtGui.QImageReader(info.absoluteFilePath())
+        reader.setAutoTransform(True)
+        size = reader.size()
+        if size.isValid():
+            reader.setScaledSize(size.scaled(QtCore.QSize(192, 192), QtCore.Qt.KeepAspectRatio))
+        image = reader.read()
+        icon = QtGui.QIcon(QtGui.QPixmap.fromImage(image)) if not image.isNull() else super().icon(info)
+        if len(self._cache) >= 256:
+            self._cache.clear()
+        self._cache[key] = icon
+        return icon
+
+
+class PickerTileDelegate(QtWidgets.QStyledItemDelegate):
+    def __init__(self, parent: QtWidgets.QWidget) -> None:
         super().__init__(parent)
-        self.setObjectName("AppTitleBar")
-        self._native_window_controls = native_window_controls
-        self.setProperty("nativeChrome", native_window_controls)
-        self.setFixedHeight(72)
-        self._drag_offset: QtCore.QPoint | None = None
+        self._tile_size = QtCore.QSize(194, 222)
+        self._icon_size = 176
 
-        layout = QtWidgets.QHBoxLayout(self)
-        layout.setContentsMargins(14, 0, 10, 0)
-        layout.setSpacing(12)
+    def set_tile_size(self, size: QtCore.QSize, icon_size: int) -> None:
+        self._tile_size = size
+        self._icon_size = icon_size
 
-        self.brand_label = QtWidgets.QLabel()
-        self.brand_label.setObjectName("TitleBarBrand")
-        self.brand_label.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
-        self.brand_label.setFixedSize(264, 62)
-        self.brand_label.setAlignment(QtCore.Qt.AlignCenter)
-        brand_pixmap = QtGui.QPixmap(str(APP_BRANDING_IMAGE_PATH))
-        if not brand_pixmap.isNull():
-            self.brand_label.setPixmap(
-                brand_pixmap.scaled(
-                    self.brand_label.size(),
-                    QtCore.Qt.KeepAspectRatio,
-                    QtCore.Qt.SmoothTransformation,
+    def sizeHint(self, option: QtWidgets.QStyleOptionViewItem, index: QtCore.QModelIndex) -> QtCore.QSize:
+        return self._tile_size
+
+    def helpEvent(self, event: QtGui.QHelpEvent, view: QtWidgets.QAbstractItemView,
+                  option: QtWidgets.QStyleOptionViewItem, index: QtCore.QModelIndex) -> bool:
+        if event.type() == QtCore.QEvent.Type.ToolTip:
+            QtWidgets.QToolTip.showText(event.globalPos(), str(index.data() or ""), view)
+            return True
+        return super().helpEvent(event, view, option, index)
+
+    def paint(self, painter: QtGui.QPainter, option: QtWidgets.QStyleOptionViewItem, index: QtCore.QModelIndex) -> None:
+        colors = theme_manager().colors
+        selected = bool(option.state & QtWidgets.QStyle.StateFlag.State_Selected)
+        hovered = bool(option.state & QtWidgets.QStyle.StateFlag.State_MouseOver)
+        rect = option.rect.adjusted(2, 2, -2, -2)
+        painter.save()
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.SmoothPixmapTransform)
+        painter.setPen(QtGui.QPen(QtGui.QColor(colors.accent if selected else colors.border), 1))
+        painter.setBrush(QtGui.QColor(colors.selection if selected else colors.raised if hovered else colors.panel))
+        painter.drawRoundedRect(QtCore.QRectF(rect), 10, 10)
+
+        icon = index.data(QtCore.Qt.ItemDataRole.DecorationRole)
+        if isinstance(icon, QtGui.QIcon):
+            pixmap = icon.pixmap(QtCore.QSize(self._icon_size, self._icon_size))
+            if not pixmap.isNull():
+                icon_area = QtCore.QRect(rect.x() + 7, rect.y() + 7, rect.width() - 14, self._icon_size)
+                target = QtCore.QRect(
+                    QtCore.QPoint(), pixmap.size().scaled(icon_area.size(), QtCore.Qt.AspectRatioMode.KeepAspectRatio)
                 )
-            )
-        self.brand_label.setToolTip(APP_DISPLAY_VERSION)
-        layout.addWidget(self.brand_label, 0, QtCore.Qt.AlignVCenter)
-        layout.addStretch(1)
+                target.moveCenter(icon_area.center())
+                painter.drawPixmap(target, pixmap)
 
-        self.btn_nav = QtWidgets.QPushButton("⚙")
-        self.btn_nav.setObjectName("TitleBarNavButton")
-        self.btn_nav.setCursor(QtCore.Qt.PointingHandCursor)
-        self.btn_nav.setToolTip("Settings")
-        self.btn_nav.setAccessibleName("Settings")
-        self.btn_nav.setFixedHeight(36 if native_window_controls else 38)
-        layout.addWidget(self.btn_nav, 0, QtCore.Qt.AlignVCenter)
+        text_rect = QtCore.QRect(rect.x() + 8, rect.y() + self._icon_size + 13, rect.width() - 16, 24)
+        painter.setPen(QtGui.QColor(colors.selection_text if selected else colors.text))
+        label = option.fontMetrics.elidedText(str(index.data() or ""), QtCore.Qt.TextElideMode.ElideMiddle, text_rect.width())
+        painter.drawText(text_rect, QtCore.Qt.AlignmentFlag.AlignCenter, label)
+        painter.restore()
 
-        self.btn_min: QtWidgets.QToolButton | None = None
-        self.btn_max: QtWidgets.QToolButton | None = None
-        self.btn_close: QtWidgets.QToolButton | None = None
-        if not native_window_controls:
-            layout.addSpacing(12)
-            self.btn_min = QtWidgets.QToolButton()
-            self.btn_min.setObjectName("WindowControl")
-            self.btn_min.setText("—")
-            self.btn_min.setToolTip("Minimize")
-            self.btn_min.clicked.connect(lambda: self.window().showMinimized())
 
-            self.btn_max = QtWidgets.QToolButton()
-            self.btn_max.setObjectName("WindowControl")
-            self.btn_max.clicked.connect(self._toggle_max_restore)
-
-            self.btn_close = QtWidgets.QToolButton()
-            self.btn_close.setObjectName("WindowCloseControl")
-            self.btn_close.setText("×")
-            self.btn_close.setToolTip("Close")
-            self.btn_close.clicked.connect(lambda: self.window().close())
-
-            for btn in (self.btn_min, self.btn_max, self.btn_close):
-                btn.setCursor(QtCore.Qt.PointingHandCursor)
-                btn.setAutoRaise(True)
-                btn.setFixedSize(43, 38)
-                layout.addWidget(btn, 0, QtCore.Qt.AlignVCenter)
-
-        self.sync_state()
-
-    def sync_state(self) -> None:
-        if self.btn_max is None:
-            return
-        win = self.window()
-        maximized = bool(win and win.isMaximized())
-        self.btn_max.setText("□" if not maximized else "❐")
-        self.btn_max.setToolTip("Maximize" if not maximized else "Restore")
-
-    def set_nav_text(self, text: str) -> None:
-        self.btn_nav.setText(text)
-
-    def _toggle_max_restore(self) -> None:
-        if self.btn_max is None:
-            return
-        win = self.window()
-        if win.isMaximized():
-            win.showNormal()
+class ThemedFileDialog(QtWidgets.QFileDialog):
+    def __init__(self, parent, title: str, directory: str, *, folder: bool):
+        super().__init__(parent, title, directory)
+        font = self.font()
+        if IS_WINDOWS:
+            font.setFamily("Segoe UI Variable")
+        font.setPointSize(10)
+        self.setFont(font)
+        self.setOption(QtWidgets.QFileDialog.Option.DontUseNativeDialog, True)
+        self.setWindowFlags(QtCore.Qt.Dialog | QtCore.Qt.FramelessWindowHint)
+        self.setFileMode(
+            QtWidgets.QFileDialog.FileMode.Directory if folder
+            else QtWidgets.QFileDialog.FileMode.ExistingFile
+        )
+        self.setViewMode(QtWidgets.QFileDialog.ViewMode.List)
+        if folder:
+            self.setOption(QtWidgets.QFileDialog.Option.ShowDirsOnly, True)
+            self.setLabelText(QtWidgets.QFileDialog.DialogLabel.FileName, "Folder")
+            self.setLabelText(QtWidgets.QFileDialog.DialogLabel.Accept, "Select folder")
         else:
-            win.showMaximized()
-        self.sync_state()
+            self.setNameFilter("Images (*.png *.jpg *.jpeg *.webp *.bmp *.tif *.tiff *.svg)")
+            self.setLabelText(QtWidgets.QFileDialog.DialogLabel.FileName, "Image")
+            self.setLabelText(QtWidgets.QFileDialog.DialogLabel.Accept, "Select image")
+            self._thumbnail_provider = ImageThumbnailProvider()
+            self.setIconProvider(self._thumbnail_provider)
+        self.setLabelText(QtWidgets.QFileDialog.DialogLabel.LookIn, "Location")
+        self.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptOpen)
+        self.setMinimumSize(680, 480)
+        layout = self.layout()
+        layout.setContentsMargins(16, 72, 16, 16)
+        layout.setHorizontalSpacing(10)
+        layout.setVerticalSpacing(10)
+        self.title_bar = CustomTitleBar(self, chooser_title=title)
+        self._icon_view = self.findChild(QtWidgets.QListView, "listView")
+        self._icon_view.setViewMode(QtWidgets.QListView.ViewMode.IconMode)
+        self._icon_view.setResizeMode(QtWidgets.QListView.ResizeMode.Adjust)
+        self._icon_view.setMovement(QtWidgets.QListView.Movement.Static)
+        self._icon_view.setWrapping(True)
+        self._tile_delegate = PickerTileDelegate(self._icon_view)
+        self._icon_view.setItemDelegate(self._tile_delegate)
+        view_page = self._icon_view.parentWidget()
+        view_page.layout().setSpacing(10)
+        self._view_bar = QtWidgets.QFrame(self)
+        self._view_bar.setObjectName("PickerViewBar")
+        view_bar_layout = QtWidgets.QHBoxLayout(self._view_bar)
+        view_bar_layout.setContentsMargins(14, 8, 10, 8)
+        view_bar_layout.setSpacing(8)
+        view_title = QtWidgets.QLabel("Folders" if folder else "Images", self._view_bar)
+        view_title.setObjectName("PickerViewTitle")
+        view_bar_layout.addWidget(view_title)
+        view_bar_layout.addStretch()
+        view_hint = QtWidgets.QLabel("Icon size", self._view_bar)
+        view_hint.setObjectName("PickerViewHint")
+        view_bar_layout.addWidget(view_hint)
+        self._size_buttons = QtWidgets.QButtonGroup(self)
+        for label in ("Large", "Extra large"):
+            button = QtWidgets.QPushButton(label, self._view_bar)
+            button.setObjectName("PickerSizeButton")
+            button.setCheckable(True)
+            button.clicked.connect(lambda _checked, size=label: self._set_icon_scale(size))
+            self._size_buttons.addButton(button)
+            view_bar_layout.addWidget(button)
+            if label == "Extra large":
+                button.setChecked(True)
+        view_page.layout().insertWidget(0, self._view_bar)
+        self._set_icon_scale("Extra large")
+        for name in ("listModeButton", "detailModeButton"):
+            button = self.findChild(QtWidgets.QToolButton, name)
+            if button is not None:
+                button.hide()
+        for name in ("backButton", "forwardButton", "toParentButton", "newFolderButton"):
+            button = self.findChild(QtWidgets.QToolButton, name)
+            if button is not None:
+                button.setFixedSize(34, 34)
+                button.setIconSize(QtCore.QSize(18, 18))
+        for name in ("lookInCombo", "fileTypeCombo", "fileNameEdit"):
+            field = self.findChild(QtWidgets.QWidget, name)
+            if field is not None:
+                field.setMinimumHeight(36)
+        for name in ("fileTypeLabel", "fileTypeCombo"):
+            field = self.findChild(QtWidgets.QWidget, name)
+            if field is not None:
+                field.hide()
+        button_box = self.findChild(QtWidgets.QDialogButtonBox, "buttonBox")
+        if button_box is not None:
+            button_box.setOrientation(QtCore.Qt.Orientation.Horizontal)
+            for button in button_box.buttons():
+                button.setMinimumSize(100, 36)
+            layout.removeWidget(button_box)
+            layout.addWidget(button_box, 2, 2)
+        sidebar = self.findChild(QtWidgets.QListView, "sidebar")
+        if sidebar is not None:
+            sidebar.setIconSize(QtCore.QSize(22, 22))
+            sidebar.setSpacing(4)
+        self._toolbar_icons = [
+            (button, button.icon()) for button in self.findChildren(QtWidgets.QToolButton)
+            if button.objectName() in {"backButton", "forwardButton", "toParentButton"}
+        ]
+        self._theme = theme_manager()
+        self._theme.changed.connect(self._apply_theme)
+        self._apply_theme()
+        available = self.screen().availableGeometry()
+        self.resize(min(1020, max(680, available.width() - 64)),
+                    min(720, max(480, available.height() - 64)))
+        self.title_bar.setGeometry(12, 8, self.width() - 24, 52)
 
-    def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:
-        if self._native_window_controls:
-            super().mousePressEvent(event)
-            return
-        if event.button() == QtCore.Qt.LeftButton:
-            win = self.window()
-            handle = win.windowHandle()
-            if handle is not None:
-                try:
-                    handle.startSystemMove()
-                    event.accept()
-                    return
-                except Exception:
-                    pass
-            if not win.isMaximized():
-                self._drag_offset = event.globalPosition().toPoint() - win.frameGeometry().topLeft()
-        super().mousePressEvent(event)
+    def _set_icon_scale(self, size: str) -> None:
+        icon, cell = (120, 158) if size == "Large" else (176, 214)
+        self._icon_view.setIconSize(QtCore.QSize(icon, icon))
+        self._icon_view.setGridSize(QtCore.QSize(cell, cell + 28))
+        self._tile_delegate.set_tile_size(QtCore.QSize(cell - 20, cell + 8), icon)
+        self._icon_view.doItemsLayout()
 
-    def mouseMoveEvent(self, event: QtGui.QMouseEvent) -> None:
-        if self._native_window_controls:
-            super().mouseMoveEvent(event)
-            return
-        if self._drag_offset is not None and event.buttons() & QtCore.Qt.LeftButton:
-            win = self.window()
-            if not win.isMaximized():
-                win.move(event.globalPosition().toPoint() - self._drag_offset)
-                event.accept()
-                return
-        super().mouseMoveEvent(event)
+    def _apply_theme(self) -> None:
+        c = self._theme.colors
+        for button, original in self._toolbar_icons:
+            source = original.pixmap(button.iconSize())
+            if source.isNull():
+                continue
+            tinted = QtGui.QPixmap(source.size())
+            tinted.fill(QtCore.Qt.transparent)
+            painter = QtGui.QPainter(tinted)
+            painter.drawPixmap(0, 0, source)
+            painter.setCompositionMode(QtGui.QPainter.CompositionMode_SourceIn)
+            painter.fillRect(tinted.rect(), QtGui.QColor(c.text))
+            painter.end()
+            button.setIcon(QtGui.QIcon(tinted))
+        self.setStyleSheet(theme_css(TITLE_BAR_CSS) + f"""
+            QFileDialog {{ background: {c.window}; color: {c.text}; border: 1px solid {c.border}; }}
+            QFrame#PickerViewBar {{
+                background: {c.panel}; border: 1px solid {c.border}; border-radius: 10px;
+            }}
+            QLabel#PickerViewTitle {{ color: {c.text}; font-size: 15px; font-weight: 600; }}
+            QLabel#PickerViewHint {{ color: {c.muted}; padding-right: 4px; }}
+            QPushButton#PickerSizeButton {{
+                background: transparent; color: {c.muted}; border: 1px solid {c.border};
+                border-radius: 7px; padding: 7px 12px;
+            }}
+            QPushButton#PickerSizeButton:hover {{ color: {c.text}; border-color: {c.accent}; }}
+            QPushButton#PickerSizeButton:checked {{
+                background: {c.accent_soft}; color: {c.text}; border-color: {c.accent};
+            }}
+            QFileDialog QTreeView, QFileDialog QListView {{
+                background: {c.field}; color: {c.text}; border: 1px solid {c.border}; border-radius: 8px;
+                selection-background-color: {c.selection}; selection-color: {c.selection_text};
+            }}
+            QListView#listView::item {{ border-radius: 8px; padding: 6px; }}
+            QListView#listView::item:hover {{ background: {c.raised}; }}
+            QListView#listView::item:selected {{ background: {c.selection}; color: {c.selection_text}; }}
+            QListView#sidebar::item {{ border-radius: 7px; padding: 7px 8px; }}
+            QListView#sidebar::item:hover {{ background: {c.raised}; }}
+            QListView#sidebar::item:selected {{ background: {c.selection}; color: {c.selection_text}; }}
+            QFileDialog QHeaderView::section {{
+                background: {c.panel}; color: {c.text}; border: 1px solid {c.border}; padding: 5px;
+            }}
+            QFileDialog QComboBox, QFileDialog QLineEdit {{
+                background: {c.field}; color: {c.text}; border: 1px solid {c.border};
+                border-radius: 6px; padding: 5px;
+                selection-background-color: {c.selection}; selection-color: {c.selection_text};
+            }}
+            QFileDialog QPushButton {{
+                background: {c.raised}; color: {c.text}; border: 1px solid {c.border};
+                border-radius: 6px; padding: 5px 10px;
+            }}
+            QFileDialog QPushButton:hover {{
+                background: {c.accent_soft}; border-color: {c.accent};
+            }}
+            QFileDialog QToolButton {{
+                background: transparent; border: 1px solid transparent; border-radius: 7px;
+            }}
+            QFileDialog QToolButton:hover {{ background: {c.raised}; border-color: {c.border}; }}
+            QFileDialog QSplitter::handle {{ background: {c.border}; }}
+            QFileDialog QLabel {{ color: {c.text}; }}
+        """)
 
-    def mouseReleaseEvent(self, event: QtGui.QMouseEvent) -> None:
-        self._drag_offset = None
-        super().mouseReleaseEvent(event)
+    def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
+        super().resizeEvent(event)
+        self.title_bar.setGeometry(12, 8, self.width() - 24, 52)
+        self.title_bar.raise_()
 
-    def mouseDoubleClickEvent(self, event: QtGui.QMouseEvent) -> None:
-        if self._native_window_controls:
-            super().mouseDoubleClickEvent(event)
-            return
-        if event.button() == QtCore.Qt.LeftButton:
-            self._toggle_max_restore()
-            event.accept()
-            return
-        super().mouseDoubleClickEvent(event)
+    def showEvent(self, event: QtGui.QShowEvent) -> None:
+        super().showEvent(event)
+        splitter = self.findChild(QtWidgets.QSplitter, "splitter")
+        if splitter is not None and splitter.sizes() and splitter.sizes()[0] < 140:
+            splitter.setSizes([190, max(1, self.width() - 220)])
 
 
 class DropLineEdit(QtWidgets.QLineEdit):
@@ -582,7 +743,7 @@ class NeonRippleIconButton(QtWidgets.QPushButton):
         self.setFixedSize(btn, btn)
 
         self.setIcon(QtGui.QIcon(pm))
-        self.setIconSize(QtCore.QSize(btn - 20, btn - 20))
+        self.setIconSize(QtCore.QSize(btn - 26, btn - 26))
 
         # circular mask
         region = QtGui.QRegion(QtCore.QRect(0, 0, btn, btn), QtGui.QRegion.Ellipse)
@@ -671,13 +832,11 @@ def preset_sizes(preset: str) -> list[int]:
 
 
 def choose_archive_storage_root(parent) -> Path | None:
-    p = QtWidgets.QFileDialog.getExistingDirectory(
-        parent,
-        "Choose Archive Storage Location",
-        QtCore.QDir.homePath(),
-        options=QtWidgets.QFileDialog.Option.DontUseNativeDialog,
-    )
-    return Path(p) if p else None
+    dialog = ThemedFileDialog(parent, "Choose Your Folder.", QtCore.QDir.homePath(), folder=True)
+    if dialog.exec() != QtWidgets.QDialog.Accepted:
+        return None
+    selected = dialog.selectedFiles()
+    return Path(selected[0]) if selected else None
 
 
 class OperationWorker(QtCore.QObject):
@@ -847,8 +1006,13 @@ class MainWindow(QtWidgets.QMainWindow):
             self.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
 
         self._settings = QtCore.QSettings(APP_ORG, APP_NAME)
+        self._sign_in_buttons: dict[str, QtWidgets.QPushButton] = {}
+        self._sign_in_status_timer = QtCore.QTimer(self)
+        self._sign_in_status_timer.setInterval(2000)
+        self._sign_in_status_timer.timeout.connect(self._refresh_sign_in_buttons)
         self._theme = theme_manager()
         self._sage_process: subprocess.Popen | None = None
+        self._sign_in_prompt_scheduled = False
         self._image_viewers: set[ArchiveImageViewer] = set()
         GenOps.apply_launch_tray_at_startup(settings=self._settings)
 
@@ -863,7 +1027,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._operation_worker: OperationWorker | None = None
         self._operation_result: object | None = None
         self._operation_error: str | None = None
-        self._archive_full_pass_running = False
         self._close_when_idle = False
 
         root = GenOps.load_archive_storage_root(self._settings)
@@ -960,10 +1123,11 @@ class MainWindow(QtWidgets.QMainWindow):
             self._archive_auto_convert_pending = False
         self.archive_storage_root = root
         self.paths = eng.EnginePaths.from_archive_storage_root(root)
+        eng.ensure_archive_storage_dirs(self.paths)
+        ensure_iconmaker_folder_icons(self.paths)
 
     def _build_ui(self) -> None:
-        root = QtWidgets.QWidget()
-        root.setObjectName("AppRoot")
+        root = AppAmbientRoot(self._theme)
         self.setCentralWidget(root)
 
         outer = QtWidgets.QVBoxLayout(root)
@@ -1032,7 +1196,8 @@ class MainWindow(QtWidgets.QMainWindow):
         sg.addWidget(self.edit_input, 1, 0, 1, 2)
         sg.addWidget(self.btn_browse_input, 1, 2)
 
-        self.chk_recursive = QtWidgets.QCheckBox('Recursive')
+        self.chk_recursive = RecursiveCheckBox('Recursive')
+        self.chk_recursive.setObjectName("RecursiveOption")
         sg.addWidget(self.chk_recursive, 2, 0, 1, 2)
 
         self.quick_action_row = QtWidgets.QHBoxLayout()
@@ -1101,23 +1266,22 @@ class MainWindow(QtWidgets.QMainWindow):
         sage_card = CardFrame('Sage')
         sage_card.setProperty("sageCard", True)
         left.addWidget(sage_card)
-        sage_layout = QtWidgets.QHBoxLayout()
+        sage_layout = QtWidgets.QVBoxLayout()
         sage_layout.setContentsMargins(0, 0, 0, 0)
-        sage_layout.setSpacing(18)
+        sage_layout.setSpacing(4)
         sage_card.body_layout().addLayout(sage_layout)
-        sage_layout.addStretch(1)
 
         self.btn_sage = NeonRippleIconButton()
         self.btn_sage.setToolTip(SAGE_TOOLTIP)
         self._apply_sage_artwork()
-        sage_layout.addWidget(self.btn_sage, 0, QtCore.Qt.AlignVCenter)
+        sage_layout.addWidget(self.btn_sage, 0, QtCore.Qt.AlignHCenter)
         self.btn_sage.clicked.connect(self._open_sage_popup)
-        sage_hint = QtWidgets.QLabel('Open image generation tools.')
+        sage_hint = QtWidgets.QLabel('Open Image Generation Tools')
         sage_hint.setObjectName('SageHint')
+        sage_hint.setAlignment(QtCore.Qt.AlignHCenter)
         sage_hint.setWordWrap(True)
-        sage_hint.setMaximumWidth(270)
-        sage_layout.addWidget(sage_hint, 0, QtCore.Qt.AlignVCenter)
-        sage_layout.addStretch(1)
+        sage_hint.setFixedWidth(400)
+        sage_layout.addWidget(sage_hint, 0, QtCore.Qt.AlignHCenter)
         left.addStretch(1)
         _yield_to_startup_splash()
 
@@ -1160,7 +1324,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_settings_archive_storage = QtWidgets.QPushButton("Archive Settings")
         self.btn_settings_image = QtWidgets.QPushButton("Images")
         self.btn_settings_themes = QtWidgets.QPushButton("Themes")
-        self.btn_settings_exit = QtWidgets.QPushButton("Exit")
         for b in (self.btn_settings_archive_storage, self.btn_settings_image, self.btn_settings_themes):
             b.setObjectName("SettingsNavButton")
             b.setCursor(QtCore.Qt.PointingHandCursor)
@@ -1169,12 +1332,7 @@ class MainWindow(QtWidgets.QMainWindow):
             b.setMinimumHeight(38)
             b.setMinimumWidth(136)
             nav_layout.addWidget(b)
-        self.btn_settings_exit.setObjectName("SettingsExitButton")
-        self.btn_settings_exit.setCursor(QtCore.Qt.PointingHandCursor)
-        self.btn_settings_exit.setMinimumHeight(38)
-        self.btn_settings_exit.setMinimumWidth(136)
         nav_layout.addStretch(1)
-        nav_layout.addWidget(self.btn_settings_exit)
         upper_layout.addWidget(nav,0)
 
         self.settings_stack = QtWidgets.QStackedWidget()
@@ -1216,12 +1374,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_open_archive_storage_root.setCursor(QtCore.Qt.PointingHandCursor)
         self.btn_change_archive_storage = QtWidgets.QPushButton("Change Archive Storage Location")
         self.btn_change_archive_storage.setCursor(QtCore.Qt.PointingHandCursor)
-        self.chk_launch_tray_at_startup = QtWidgets.QCheckBox("Launch Tray at Startup")
+        self.chk_launch_tray_at_startup = RecursiveCheckBox("Launch Tray at Startup")
         self.chk_launch_tray_at_startup.setChecked(GenOps.load_launch_tray_at_startup(self._settings))
-        self.chk_promote_image_copies = QtWidgets.QCheckBox("Rename copies when the original is deleted")
+        self.chk_promote_image_copies = RecursiveCheckBox("Rename copies when the original is deleted")
         self.chk_promote_image_copies.setChecked(GenOps.load_promote_image_copies(self._settings))
         self.chk_promote_image_copies.setToolTip("Promote the first remaining copy in Icon Images to the original name.")
-        self.chk_remove_extra_image_copies = QtWidgets.QCheckBox("Remove extra copies at startup and exit")
+        self.chk_remove_extra_image_copies = RecursiveCheckBox("Remove extra copies at startup and exit")
         self.chk_remove_extra_image_copies.setChecked(GenOps.load_remove_extra_image_copies(self._settings))
         self.chk_remove_extra_image_copies.setToolTip("When a numbered copy exists, delete all copies if the original exists.")
         archive_grid.addWidget(QtWidgets.QLabel("Archive Storage Root"), 0, 0)
@@ -1274,10 +1432,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.set_quality_preset("16-256")
         self.cmb_quality_min.currentIndexChanged.connect(self._quality_min_changed)
         self.cmb_quality_max.currentIndexChanged.connect(self._quality_max_changed)
-        self.chk_overwrite = QtWidgets.QCheckBox("Overwrite Mode")
+        self.chk_overwrite = RecursiveCheckBox("Overwrite Mode")
         self.chk_overwrite.setChecked(True)
         self.chk_overwrite.setToolTip(
-            "Controls the selected Run input. After any icon is created, the archive is refreshed."
+            "Rebuild the selected image's existing icon. Other images found in its folder only create missing icons."
         )
         self.cmb_padding = ImageSettingsComboBox()
         self.cmb_padding.addItems(list(eng.PADDING_PRESETS.keys()))
@@ -1301,6 +1459,23 @@ class MainWindow(QtWidgets.QMainWindow):
         g.addWidget(QtWidgets.QLabel("Padding"), 2, 0)
         g.addWidget(self.cmb_padding, 2, 1)
         g.addWidget(self.chk_overwrite, 3, 0, 1, 2)
+
+        accounts_card = CardFrame("Image Generator Sign-In")
+        if accounts_card.title_label is not None:
+            accounts_card.title_label.setObjectName("SettingsSectionTitle")
+        account_actions = QtWidgets.QHBoxLayout()
+        account_actions.setSpacing(8)
+        for provider in SIGN_IN_PROVIDERS:
+            button = QtWidgets.QPushButton(provider)
+            button.setObjectName("ProviderSignInButton")
+            button.setCursor(QtCore.Qt.PointingHandCursor)
+            button.setMinimumHeight(48)
+            button.clicked.connect(lambda _checked=False, name=provider: self._open_generator_window("sign_in", name))
+            self._sign_in_buttons[provider] = button
+            account_actions.addWidget(button, 1)
+        accounts_card.body_layout().addLayout(account_actions)
+        img_layout.addWidget(accounts_card)
+        self._refresh_sign_in_buttons()
 
         img_layout.addStretch(1)
         _yield_to_startup_splash()
@@ -1330,7 +1505,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_settings_archive_storage.clicked.connect(lambda: self.settings_stack.setCurrentIndex(0))
         self.btn_settings_image.clicked.connect(lambda: self.settings_stack.setCurrentIndex(1))
         self.btn_settings_themes.clicked.connect(lambda: self.settings_stack.setCurrentIndex(2))
-        self.btn_settings_exit.clicked.connect(self._exit_iconmaker)
         self.settings_stack.setCurrentIndex(0)
         self._sync_settings_navigation(0)
         self.view_stack.setCurrentWidget(self.page_main)
@@ -1348,61 +1522,9 @@ class MainWindow(QtWidgets.QMainWindow):
         f.setPointSize(10)
         self.setFont(f)
 
-        self.setStyleSheet(theme_css(r"""
+        self.setStyleSheet(theme_css(TITLE_BAR_CSS + r"""
         QMainWindow {
             background: transparent;
-        }
-        #AppRoot {
-            border-radius: 18px;
-            background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                stop:0 #070c18, stop:0.6 #0a1020, stop:1 #130d26);
-            border: 1px solid #243049;
-        }
-        #AppTitleBar {
-            border-radius: 14px;
-            background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                stop:0 #10243e, stop:0.5 #151b3a, stop:1 #291530);
-            border: 1px solid #34445f;
-            border-bottom: 1px solid #2f8096;
-        }
-        #AppTitleBar[nativeChrome="true"] {
-            border-radius: 14px;
-            background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                stop:0 #10243e, stop:0.5 #151b3a, stop:1 #291530);
-            border: 1px solid #34445f;
-            border-bottom: 1px solid #2f8096;
-        }
-        #TitleBarBrand {
-            background: transparent;
-        }
-        QPushButton#TitleBarNavButton {
-            border-radius: 9px;
-            padding: 3px 12px;
-            background-color: rgba(43, 58, 88, 0.62);
-            border: 1px solid rgba(148, 181, 219, 0.24);
-            color: #dbe5f2;
-            font-size: 17px;
-            font-weight: 600;
-        }
-        QPushButton#TitleBarNavButton:hover {
-            border-color: rgba(54,201,232,0.42);
-            background-color: #1b3445;
-        }
-        QToolButton#WindowControl, QToolButton#WindowCloseControl {
-            border-radius: 9px;
-            border: 1px solid rgba(148, 181, 219, 0.22);
-            background-color: rgba(43, 58, 88, 0.58);
-            color: #dbe5f2;
-            font-size: 14px;
-            font-weight: 600;
-        }
-        QToolButton#WindowControl:hover {
-            border-color: rgba(54,201,232,0.42);
-            background-color: #1b3445;
-        }
-        QToolButton#WindowCloseControl:hover {
-            border-color: rgba(255,92,92,0.65);
-            background: rgba(255,92,92,0.18);
         }
         #Hero {
             border-radius: 14px;
@@ -1466,7 +1588,7 @@ class MainWindow(QtWidgets.QMainWindow):
             font-size: 11px;
         }
         #SageHint {
-            color: #e1eaf6;
+            color: #e4ad62;
             font-size: 14px;
             font-weight: 600;
         }
@@ -1491,6 +1613,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         QLabel { color: #dbe5f2; }
         QCheckBox { color: #dbe5f2; font-weight: 500; }
+        QCheckBox::indicator { width: 18px; height: 18px; }
 
         QLineEdit, QPlainTextEdit, QComboBox, QListWidget {
             border-radius: 9px;
@@ -1570,18 +1693,18 @@ class MainWindow(QtWidgets.QMainWindow):
             border-color: rgba(54,201,232,0.45);
             background-color: #1b3445;
         }
-        QPushButton#SettingsExitButton {
-            color: #a9b8ca;
-            background-color: transparent;
-            border: 1px solid #2b394d;
+        QPushButton#ProviderSignInButton {
+            background: #101827;
+            color: #dbe5f2;
+            border: 1px solid #273348;
+            border-radius: 9px;
         }
-        QPushButton#SettingsExitButton:hover {
-            background-color: rgba(174, 72, 72, 0.14);
-            border-color: rgba(232, 96, 96, 0.55);
-            color: #f4d6d6;
-        }
-        QPushButton#SettingsExitButton:pressed {
-            background-color: rgba(174, 72, 72, 0.22);
+        QPushButton#ProviderSignInButton:hover { border-color: #36c9e8; }
+        QPushButton#ProviderSignInButton[signedIn="true"] {
+            background: #36c9e8;
+            color: #080d19;
+            border-color: #36c9e8;
+            font-weight: 600;
         }
         QPushButton#SettingsNavButton {
             font-size: 12px;
@@ -1770,11 +1893,24 @@ class MainWindow(QtWidgets.QMainWindow):
             self.view_stack.setCurrentWidget(self.page_settings)
         self._sync_view_chrome()
 
-    def _exit_iconmaker(self) -> None:
-        """Exit the UI and tray together through the shared app-event channel."""
-        self.state.flush_pending_save(self)
-        GenOps.publish_app_event("quit-all", "settings-exit")
-        QtCore.QTimer.singleShot(120, self.close)
+    def _refresh_sign_in_buttons(self) -> None:
+        self._settings.sync()
+        for provider, button in self._sign_in_buttons.items():
+            signed_in = sign_in_status(self._settings, provider) == "signed_in"
+            button.setToolTip(f"{provider}: {'Signed in' if signed_in else 'Sign in'}")
+            if button.property("signedIn") != signed_in:
+                button.setProperty("signedIn", signed_in)
+                button.style().unpolish(button)
+                button.style().polish(button)
+
+    def _sync_sign_in_status_monitor(self) -> None:
+        active = (self.view_stack.currentWidget() is self.page_settings
+                  and self.settings_stack.currentIndex() == 1)
+        if active:
+            self._refresh_sign_in_buttons()
+            self._sign_in_status_timer.start()
+        else:
+            self._sign_in_status_timer.stop()
 
     def _set_launch_tray_at_startup(self, enabled: bool) -> None:
         """Persist and apply the user's tray-at-startup preference."""
@@ -1806,11 +1942,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.title_bar.btn_nav.setAccessibleName("Back" if in_settings else "Settings")
         self.title_bar.sync_state()
         self._update_window_shape()
+        self._sync_sign_in_status_monitor()
 
     def _sync_settings_navigation(self, index: int) -> None:
         self.btn_settings_archive_storage.setChecked(index == 0)
         self.btn_settings_image.setChecked(index == 1)
         self.btn_settings_themes.setChecked(index == 2)
+        self._sync_sign_in_status_monitor()
 
     def _sync_theme_selection(self, preference: str) -> None:
         for appearance, button in self.theme_buttons.items():
@@ -1989,6 +2127,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._archive_auto_convert_pending = False
         candidates = self._archive_auto_convert_candidates
         self._archive_auto_convert_candidates = {}
+        changed_images: list[Path] = []
         for path_text, signature in candidates.items():
             source = Path(path_text)
             try:
@@ -1999,10 +2138,11 @@ class MainWindow(QtWidgets.QMainWindow):
                     continue
                 icon = eng.archive_icon_path_for_source_image(source, paths=self.paths)
                 if not icon.exists() or icon.stat().st_mtime_ns < source_stat.st_mtime_ns:
-                    self._run_archive_maintenance_now("watched-image")
-                    return
+                    changed_images.append(source)
             except (OSError, ValueError):
                 continue
+        if changed_images:
+            self._run_archive_maintenance_now("watched-image", changed_images=changed_images)
 
     def _start_pending_watched_image_conversion(self) -> None:
         if self._archive_auto_convert_pending and not self._run_in_progress:
@@ -2026,12 +2166,14 @@ class MainWindow(QtWidgets.QMainWindow):
         if mode == "folder":
             self.chk_recursive.setVisible(True)
             self.chk_recursive.setEnabled(True)
+            self.chk_overwrite.setEnabled(False)
             self.btn_browse_input.setText("Select Folder...")
             self.edit_input.setPlaceholderText("Select Folder...")
         else:
             self.chk_recursive.setChecked(False)
             self.chk_recursive.setVisible(False)
             self.chk_recursive.setEnabled(False)
+            self.chk_overwrite.setEnabled(True)
             self.btn_browse_input.setText("Select Image...")
             self.edit_input.setPlaceholderText("Select Image...")
         self._update_workflow_actions()
@@ -2137,17 +2279,35 @@ class MainWindow(QtWidgets.QMainWindow):
         self._open_archive_image(source)
 
     def _open_sage_popup(self) -> None:
+        self._open_generator_window("generator")
+
+    def _open_generator_window(self, action: str, provider: str = "ChatGPT", retries: int = 0) -> None:
+        if send_generator_command(action, provider):
+            return
         if IS_WINDOWS:
             import ctypes
 
             user32 = ctypes.windll.user32
             user32.FindWindowW.restype = ctypes.c_void_p
             handle = user32.FindWindowW(None, "IconForge · Image Generation")
-            if handle:
+            if handle and action == "generator":
                 user32.ShowWindow(ctypes.c_void_p(handle), 9)
                 user32.SetForegroundWindow(ctypes.c_void_p(handle))
                 return
         if self._sage_process is not None and self._sage_process.poll() is None:
+            if retries < 20:
+                QtCore.QTimer.singleShot(
+                    250, lambda: self._open_generator_window(action, provider, retries + 1)
+                )
+                return
+            message = "The image generator is already open but is not responding to sign-in requests. Close and reopen it to use Sign In."
+            self._log(message, "WARN")
+            QtWidgets.QMessageBox.warning(self, APP_DISPLAY_NAME, message)
+            return
+        if IS_WINDOWS and handle:
+            message = "Close the open image generator and try Sign In again so it can use the updated sign-in panel."
+            self._log(message, "WARN")
+            QtWidgets.QMessageBox.warning(self, APP_DISPLAY_NAME, message)
             return
         if getattr(sys, "frozen", False):
             command = [sys.executable, "--mode", "generator"]
@@ -2155,8 +2315,15 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             command = [sys.executable, str(APP_DIR / "IconMakerMaster.py"), "--mode", "generator"]
             cwd = APP_DIR
+        if action == "sign_in":
+            command.extend(["--sign-in", "--provider", provider])
         try:
             self._sage_process = subprocess.Popen(command, cwd=cwd, close_fds=True)
+            if IS_WINDOWS:
+                try:
+                    ctypes.windll.user32.AllowSetForegroundWindow(self._sage_process.pid)
+                except (AttributeError, OSError):
+                    pass
         except OSError as exc:
             self._log(f"Image generator could not open: {exc}", "ERR")
             QtWidgets.QMessageBox.warning(self, APP_DISPLAY_NAME, f"Image generator could not open:\n\n{exc}")
@@ -2236,6 +2403,10 @@ class MainWindow(QtWidgets.QMainWindow):
         try:
             dst = eng.unique_path(p.parent / p.name)
             shutil.copy2(p, dst)
+            try:
+                copy_record(p, dst)
+            except (OSError, ValueError) as exc:
+                self._log(f"WARN: Could not copy image prompt details: {exc}", "WARN")
             self._log(f"Duplicated image: {p.name} -> {dst.name}")
             self._run_archive_maintenance_now("archive-duplicate")
             self._set_input(str(dst))
@@ -2279,6 +2450,10 @@ class MainWindow(QtWidgets.QMainWindow):
             old_icon = self._archive_icon_path_for_image(p)
             new_icon = self._archive_icon_path_for_image(desired)
             p.rename(desired)
+            try:
+                move_record(p, desired)
+            except (OSError, ValueError) as exc:
+                self._log(f"WARN: Could not move image prompt details: {exc}", "WARN")
             if old_icon.exists() and old_icon != new_icon:
                 new_icon.parent.mkdir(parents=True, exist_ok=True)
                 old_icon.replace(new_icon)
@@ -2303,6 +2478,10 @@ class MainWindow(QtWidgets.QMainWindow):
                     moved = bool(QtCore.QFile.moveToTrash(str(p), None))
             if not moved:
                 p.unlink()
+            try:
+                delete_record(p)
+            except OSError as exc:
+                self._log(f"WARN: Could not remove image prompt details: {exc}", "WARN")
             self._log(f"Deleted image: {p.name}")
             if self.edit_input.text().strip() == str(p):
                 self.edit_input.clear()
@@ -2313,39 +2492,35 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _browse_input(self) -> None:
         mode = self.mode_seg.mode()
-        if mode == "folder":
-            p = QtWidgets.QFileDialog.getExistingDirectory(
-                self, "Choose Folder", str(self.paths.images_dir),
-                options=QtWidgets.QFileDialog.Option.DontUseNativeDialog,
-            )
-            if p:
-                self._set_input(p)
-        else:
-            p, _ = QtWidgets.QFileDialog.getOpenFileName(
-                self, "Choose Image", str(self.paths.images_dir),
-                options=QtWidgets.QFileDialog.Option.DontUseNativeDialog,
-            )
-            if p:
-                self._set_input(p)
+        dialog = ThemedFileDialog(
+            self,
+            "Choose Your Folder." if mode == "folder" else "Choose Your Image.",
+            str(self.paths.images_dir),
+            folder=mode == "folder",
+        )
+        if dialog.exec() == QtWidgets.QDialog.Accepted:
+            selected = dialog.selectedFiles()
+            if selected:
+                self._set_input(selected[0])
 
-    def _run_archive_maintenance_now(self, reason: str) -> None:
+    def _run_archive_maintenance_now(self, reason: str, *, changed_images: list[Path] | None = None) -> None:
         if self._run_in_progress:
             return
         self._log(f"=== MAINTENANCE ({reason}) ===")
         paths = self.paths
-        # A changed watched image needs a full pass, including existing icons.
-        overwrite = reason == "watched-image"
+        changed = tuple(changed_images or ())
         sizes = preset_sizes(self.quality_preset())
         padding_mode = self.cmb_padding.currentText()
         self._start_operation(
             "maintenance",
             lambda _progress, log, _cancelled: GenOps.run_archive_maintenance(
                 paths=paths,
-                overwrite=overwrite,
+                overwrite=False,
                 sizes=sizes,
                 padding_mode=padding_mode,
                 autocrop=False,
                 logfn=log,
+                changed_images=changed,
             ),
             f"Updating archive... ({reason})",
         )
@@ -2370,14 +2545,13 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._run_in_progress:
             return
         start_dir = str(getattr(self, "archive_storage_root", Path.home()))
-        picked = QtWidgets.QFileDialog.getExistingDirectory(
-            self,
-            "Choose New Archive Storage Location",
-            start_dir,
-            options=QtWidgets.QFileDialog.Option.DontUseNativeDialog,
-        )
-        if not picked:
+        dialog = ThemedFileDialog(self, "Choose Your Folder.", start_dir, folder=True)
+        if dialog.exec() != QtWidgets.QDialog.Accepted:
             return
+        selected = dialog.selectedFiles()
+        if not selected:
+            return
+        picked = selected[0]
         new_root = Path(picked).resolve()
         old_root = Path(self.archive_storage_root).resolve()
         if new_root == old_root:
@@ -2422,6 +2596,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
         GenOps.save_archive_storage_root(new_root, self._settings)
         self._set_archive_storage_paths(new_root)
+        try:
+            copy_archive_records(old_images_dir, self.paths.images_dir)
+        except (OSError, ValueError) as exc:
+            self._log(f"WARN: Could not copy all image prompt details: {exc}", "WARN")
         self._lock_output_to_canonical()
         self._refresh_archive_view()
         current_input = self.edit_input.text().strip()
@@ -2505,7 +2683,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._operation_kind = kind
         self._operation_result = None
         self._operation_error = None
-        self._archive_full_pass_running = False
         self.status_line.setText(status)
         if kind == "conversion":
             self.bar.setRange(0, 100)
@@ -2533,10 +2710,6 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_operation_progress(self, done: int, total: int, current: str) -> None:
         self.status_line.setText(current)
         self.bar.setValue(int((done * 100) / max(1, total)))
-        if self._operation_kind == "conversion" and current.startswith("Updating archive:"):
-            self._archive_full_pass_running = True
-            self.btn_run.setText("Updating archive…")
-            self.btn_run.setEnabled(False)
 
     def _on_operation_result(self, result: object) -> None:
         self._operation_result = result
@@ -2555,7 +2728,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._operation_worker = None
         self._operation_kind = None
         self._run_in_progress = False
-        self._archive_full_pass_running = False
         self._set_run_ui_enabled(True)
         self._update_run_state()
 
@@ -2622,7 +2794,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._start_pending_watched_image_conversion()
 
     def _cancel(self) -> None:
-        if self._operation_kind != "conversion" or self._operation_thread is None or self._archive_full_pass_running:
+        if self._operation_kind != "conversion" or self._operation_thread is None:
             return
         if self._operation_thread.isInterruptionRequested():
             return
@@ -2643,13 +2815,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_browse_input.setEnabled(enabled)
         self.mode_seg.setEnabled(enabled)
         self.chk_recursive.setEnabled(enabled)
-        self.chk_overwrite.setEnabled(enabled)
+        self.chk_overwrite.setEnabled(enabled and self.mode_seg.mode() == "file")
         self.cmb_quality_min.setEnabled(enabled)
         self.cmb_quality_max.setEnabled(enabled)
         self.cmb_padding.setEnabled(enabled)
         self.archive_sidebar.setEnabled(enabled)
         self.btn_change_archive_storage.setEnabled(enabled)
-        self.btn_settings_exit.setEnabled(enabled)
 
     def _run_convert(self) -> None:
         if self._run_in_progress:
@@ -2671,7 +2842,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         padding_mode = self.cmb_padding.currentText()
         recursive = self.chk_recursive.isChecked()
-        overwrite = self.chk_overwrite.isChecked()
+        overwrite = inp.is_file() and self.chk_overwrite.isChecked()
 
         self._log("=== RUN ===", "INFO")
         self._log(f"Input: {inp}", "INFO")
@@ -2748,6 +2919,21 @@ class MainWindow(QtWidgets.QMainWindow):
                 pass
         super().changeEvent(event)
 
+    def showEvent(self, event: QtGui.QShowEvent) -> None:
+        super().showEvent(event)
+        if not self._sign_in_prompt_scheduled:
+            self._sign_in_prompt_scheduled = True
+            QtCore.QTimer.singleShot(0, self._offer_sign_in_if_needed)
+
+    def _offer_sign_in_if_needed(self) -> None:
+        if not self.isVisible():
+            return
+        offer = should_offer_sign_in(self._settings)
+        self._settings.setValue(APP_OPENED_KEY, True)
+        self._settings.sync()
+        if offer:
+            self._open_generator_window("sign_in")
+
     def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
         try:
             self._update_window_shape()
@@ -2758,10 +2944,8 @@ class MainWindow(QtWidgets.QMainWindow):
     def closeEvent(self, event) -> None:
         if self._run_in_progress:
             self._close_when_idle = True
-            if self._operation_kind == "conversion" and not self._archive_full_pass_running:
+            if self._operation_kind == "conversion":
                 self._cancel()
-            elif self._archive_full_pass_running:
-                self.status_line.setText("Finishing archive update before closing…")
             event.ignore()
             return
         self._completion_idle_timer.stop()

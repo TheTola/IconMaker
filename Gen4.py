@@ -47,22 +47,6 @@ def ICONS_DIR() -> Path:
     return _current_engine_paths().icons_dir
 
 
-def LOGS_DIR() -> Path:
-    """Keep application logs in the managed storage's internal Logs directory."""
-    return ICON_IMAGES_DIR() / "Logs"
-
-
-def ensure_logs_dir() -> None:
-    """Create the shared Logs directory early so launcher, UI, and tray can log safely."""
-    try:
-        LOGS_DIR().mkdir(parents=True, exist_ok=True)
-    except Exception:
-        pass
-
-
-ensure_logs_dir()
-
-
 # These override strings may be absolute or relative. Validation is deferred
 # until lookup so packaged and source runs can share the same config surface.
 APP_TITLE_IMAGE_OVERRIDE = "assets/iconner.png"

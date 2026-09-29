@@ -17,6 +17,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 import Gen2 as eng
 from AppTheme import theme_color, theme_css, theme_manager
+from AppTitleBar import CustomTitleBar, TITLE_BAR_CSS
 
 COLLAPSED_WIDTH = 44
 EXPANDED_WIDTH = 528
@@ -193,57 +194,6 @@ class ArchivePreviewFrame(QtWidgets.QFrame):
         super().mouseDoubleClickEvent(event)
 
 
-class ArchiveUtilityTitleBar(QtWidgets.QFrame):
-    def __init__(self, title: str, parent=None):
-        super().__init__(parent)
-        self.setObjectName("ArchivePropertiesTitleBar")
-        self.setFixedHeight(30)
-        self._drag_offset: QtCore.QPoint | None = None
-
-        layout = QtWidgets.QHBoxLayout(self)
-        layout.setContentsMargins(12, 0, 4, 0)
-        layout.setSpacing(6)
-
-        label = QtWidgets.QLabel(title)
-        label.setObjectName("ArchivePropertiesTitle")
-        label.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
-        layout.addWidget(label, 1)
-
-        self.btn_close = QtWidgets.QToolButton()
-        self.btn_close.setObjectName("ArchivePropertiesCloseButton")
-        self.btn_close.setText("x")
-        self.btn_close.setCursor(QtCore.Qt.PointingHandCursor)
-        self.btn_close.setAutoRaise(True)
-        self.btn_close.setFixedSize(26, 24)
-        self.btn_close.clicked.connect(lambda: self.window().close())
-        layout.addWidget(self.btn_close, 0, QtCore.Qt.AlignVCenter)
-
-    def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:
-        if event.button() == QtCore.Qt.LeftButton:
-            win = self.window()
-            handle = win.windowHandle()
-            if handle is not None:
-                try:
-                    handle.startSystemMove()
-                    event.accept()
-                    return
-                except Exception:
-                    pass
-            self._drag_offset = event.globalPosition().toPoint() - win.frameGeometry().topLeft()
-        super().mousePressEvent(event)
-
-    def mouseMoveEvent(self, event: QtGui.QMouseEvent) -> None:
-        if self._drag_offset is not None and event.buttons() & QtCore.Qt.LeftButton:
-            self.window().move(event.globalPosition().toPoint() - self._drag_offset)
-            event.accept()
-            return
-        super().mouseMoveEvent(event)
-
-    def mouseReleaseEvent(self, event: QtGui.QMouseEvent) -> None:
-        self._drag_offset = None
-        super().mouseReleaseEvent(event)
-
-
 class ArchivePropertiesWindow(QtWidgets.QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -266,7 +216,7 @@ class ArchivePropertiesWindow(QtWidgets.QDialog):
         chrome_layout.setContentsMargins(1, 1, 1, 1)
         chrome_layout.setSpacing(0)
 
-        self.title_bar = ArchiveUtilityTitleBar("Properties", chrome)
+        self.title_bar = CustomTitleBar(chrome, chooser_title="Properties")
         chrome_layout.addWidget(self.title_bar)
 
         card = QtWidgets.QFrame()
@@ -338,37 +288,14 @@ class ArchivePropertiesWindow(QtWidgets.QDialog):
             QFrame#ArchivePropertiesChrome {
                 background-color: #0b1323;
                 border: 1px solid rgba(75, 164, 203, 0.30);
-                border-radius: 10px;
-            }
-            QFrame#ArchivePropertiesTitleBar {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 #172943, stop:0.55 #102039, stop:1 #111a2d);
-                border-top-left-radius: 9px;
-                border-top-right-radius: 9px;
-                border-bottom: 1px solid rgba(83,171,212,0.42);
-            }
-            QLabel#ArchivePropertiesTitle {
-                color: #edf7ff;
-                font-size: 12px;
-                font-weight: 600;
-            }
-            QToolButton#ArchivePropertiesCloseButton {
-                border-radius: 6px;
-                border: 1px solid rgba(255,255,255,0.08);
-                background: rgba(255,255,255,0.04);
-                color: #d4deed;
-                font-size: 12px;
-            }
-            QToolButton#ArchivePropertiesCloseButton:hover {
-                border-color: rgba(54,201,232,0.55);
-                background: rgba(54,201,232,0.10);
+                border-radius: 14px;
             }
             QFrame#ArchivePropertiesCard {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
                     stop:0 #132138, stop:1 #0d1729);
                 border: 0;
-                border-bottom-left-radius: 9px;
-                border-bottom-right-radius: 9px;
+                border-bottom-left-radius: 14px;
+                border-bottom-right-radius: 14px;
             }
             QLabel#ArchivePropertiesHeading {
                 color: #b7d9ec;
@@ -412,7 +339,7 @@ class ArchivePropertiesWindow(QtWidgets.QDialog):
         self._refresh_layout_metrics()
 
     def _apply_theme(self, *_args) -> None:
-        self.setStyleSheet(theme_css(self._theme_style))
+        self.setStyleSheet(theme_css(TITLE_BAR_CSS + self._theme_style))
 
     def set_entry(self, entry: ArchiveEntrySnapshot | None) -> None:
         if entry is None:

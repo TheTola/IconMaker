@@ -31,12 +31,14 @@ from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 from PIL import Image, UnidentifiedImageError
 
 from GenName import (
+    MAX_NAME_LEN,
     copy_into_archive_storage_strict,
     move_within_archive_storage_strict,
     canonical_key,
     sanitize_piece,
     validate_archive_image_filename,
 )
+from GenFolderIcons import is_folder_icon_metadata
 
 
 @dataclass(frozen=True)
@@ -1109,6 +1111,7 @@ def mirror_copy_to_archive_sources(
     paths: EnginePaths | None = None,
     source_root: Path | None = None,
     logfn: Callable[[str], None] | None = None,
+    unique_on_collision: bool = False,
 ) -> Optional[Path]:
     """
     Copy-only import into managed archive sources.
@@ -1131,6 +1134,26 @@ def mirror_copy_to_archive_sources(
 
     if col is not None:
         _safe_log(logfn, f"IMPORT COLLISION: {src.name}")
+        if unique_on_collision and dst is not None:
+            number = 2
+            while True:
+                marker = f" ({number})"
+                stem = dst.stem[:MAX_NAME_LEN - len(dst.suffix) - len(marker)]
+                candidate = dst.with_name(f"{stem}{marker}{dst.suffix}")
+                if candidate.exists():
+                    try:
+                        if filecmp.cmp(src, candidate, shallow=False):
+                            return candidate
+                    except OSError:
+                        pass
+                    number += 1
+                    continue
+                copied, retry_collision = copy_into_archive_storage_strict(
+                    src, candidate.parent, target_name=candidate.name, logfn=logfn,
+                )
+                if retry_collision is None:
+                    return copied
+                number += 1
         return dst
 
     return dst
@@ -1356,6 +1379,8 @@ def remove_orphan_icons(
         try:
             if _is_under(ico, orphan_dir):
                 continue
+            if is_folder_icon_metadata(ico):
+                continue
 
             rel = ico.relative_to(icons_dir)
             if suffix and not ico.stem.endswith(suffix):
@@ -1518,7 +1543,7 @@ def _cli() -> int:
     ap.add_argument("--out", default=None, help="Output directory or .ico path")
     ap.add_argument(
         "--no-overwrite", action="store_true",
-        help="Do not overwrite direct outputs; archived icons are refreshed after a conversion",
+        help="Do not overwrite existing direct output icons",
     )
     ap.add_argument("--no-alpha", action="store_true", help="Discard alpha")
     ap.add_argument("--autocrop", action="store_true", help="Legacy option; transparent borders are always trimmed")

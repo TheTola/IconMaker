@@ -365,7 +365,7 @@ class IconImagePrototype(QtWidgets.QWidget):
     def _apply_theme(self, *_args) -> None:
         self.setStyleSheet(theme_css(self._theme_style))
         if hasattr(self, "connection_dot"):
-            color = "#62d6b0" if self._service.is_ready else "#e4ad62" if self._service.is_connected else "#e27f88"
+            color = theme_manager().colors.success if self._service.is_ready else "#e4ad62" if self._service.is_connected else "#e27f88"
             self.connection_dot.setStyleSheet(theme_css(f"color: {color}; background: transparent;"))
         if hasattr(self, "drop_overlay"):
             self.drop_overlay.update()
@@ -382,7 +382,7 @@ class IconImagePrototype(QtWidgets.QWidget):
         )
         margin = 0 if ready else 14
         self.connection_row.setContentsMargins(margin, 0 if ready else 11, margin, 0 if ready else 11)
-        color = "#62d6b0" if ready else "#e4ad62" if self._service.is_connected else "#e27f88"
+        color = theme_manager().colors.success if ready else "#e4ad62" if self._service.is_connected else "#e27f88"
         self.connection_dot.setStyleSheet(theme_css(f"color: {color}; background: transparent;"))
         self.sign_in_button.setText("Switch ChatGPT account" if self._service.is_chatgpt_signed_in else "Sign in with ChatGPT")
         if ready and self.progress_label.text() == "Waiting for connection...":

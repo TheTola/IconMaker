@@ -14,6 +14,8 @@ a = Analysis(
     noarchive=False,
     optimize=0,
 )
+# Qt6Core needs the Windows ICU exports, not a PATH-provided ICU DLL.
+a.binaries = [entry for entry in a.binaries if entry[0].lower() != 'icuuc.dll']
 pyz = PYZ(a.pure)
 
 exe = EXE(
@@ -33,7 +35,7 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     version='IconMaker.versioninfo',
-    icon=['assets\\iconner.ico'],
+    icon=['assets\\folder_icons\\iconmaker.ico'],
 )
 coll = COLLECT(
     exe,

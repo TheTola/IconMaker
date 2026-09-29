@@ -6,6 +6,7 @@ from pathlib import Path
 
 from PySide6 import QtCore, QtGui, QtWidgets
 from AppTheme import theme_color, theme_css, theme_manager
+from AppTitleBar import CustomTitleBar, TITLE_BAR_CSS
 
 
 _active_loads: set[QtCore.QThread] = set()
@@ -134,6 +135,7 @@ class ArchiveImageViewer(QtWidgets.QDialog):
         super().__init__(parent)
         self.path = Path(path)
         self.setAttribute(QtCore.Qt.WA_DeleteOnClose)
+        self.setWindowFlags(QtCore.Qt.Dialog | QtCore.Qt.FramelessWindowHint)
         self.setWindowTitle(f"{self.path.name} · Image Viewer")
         self.setMinimumSize(520, 400)
         self.resize(1000, 740)
@@ -152,12 +154,11 @@ class ArchiveImageViewer(QtWidgets.QDialog):
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(9)
+        self.title_bar = CustomTitleBar(self, chooser_title="")
+        layout.addWidget(self.title_bar)
         toolbar = QtWidgets.QHBoxLayout()
         toolbar.setSpacing(8)
-        name = QtWidgets.QLabel(self.path.name)
-        name.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
-        name.setToolTip(str(self.path))
-        toolbar.addWidget(name, 1)
+        toolbar.addStretch(1)
         self.fit_button = QtWidgets.QPushButton("Fit to Window")
         self.fit_button.setAccessibleName("Fit image to window")
         toolbar.addWidget(self.fit_button)
@@ -181,7 +182,7 @@ class ArchiveImageViewer(QtWidgets.QDialog):
         QtCore.QTimer.singleShot(0, self._start_load)
 
     def _apply_theme(self, *_args) -> None:
-        self.setStyleSheet(theme_css(self._theme_style))
+        self.setStyleSheet(theme_css(TITLE_BAR_CSS + self._theme_style))
         if hasattr(self, "canvas"):
             self.canvas.setBackgroundBrush(theme_color("#101827"))
 

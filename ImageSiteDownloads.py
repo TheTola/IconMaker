@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import shutil
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
 from PySide6 import QtCore, QtGui
@@ -13,7 +14,8 @@ from PySide6.QtWebEngineCore import QWebEngineDownloadRequest, QWebEnginePage, Q
 import Gen2
 import GenLog
 import GenOps
-from GenName import sanitize_piece, validate_image_stem
+from GeneratedImageInfo import ImageOrigin, descriptive_title, image_stem, numbered_stem, save_record, utc_now
+from GenName import MAX_NAME_LEN, sanitize_piece, validate_image_stem
 
 
 _IMAGE_SUFFIXES = Gen2.IMAGE_EXTS - {".svg"}
@@ -26,10 +28,16 @@ _MIME_SUFFIXES = {
 }
 
 
+@dataclass(frozen=True)
+class _PreviewIdentity:
+    origin: ImageOrigin
+    base_stem: str
+    fallback: bool
+
+
 class ImageSiteDownloads(QtCore.QObject):
     statusChanged = QtCore.Signal(str)
     imageSaved = QtCore.Signal(str, str)
-    archiveReady = QtCore.Signal(str, str)
     failed = QtCore.Signal(str)
     activeChanged = QtCore.Signal(int)
 
@@ -46,9 +54,13 @@ class ImageSiteDownloads(QtCore.QObject):
         self.root.mkdir(parents=True, exist_ok=True)
         self._reserved: set[Path] = set()
         self._active: dict[int, QWebEngineDownloadRequest] = {}
-        self._archive_pending: set[tuple[str, str]] = set()
-        self._archive_inflight: set[tuple[str, str]] = set()
-        self._archive_downloads: dict[int, tuple[str, str]] = {}
+        self._image_url_pending: set[tuple[str, str]] = set()
+        self._image_url_inflight: set[tuple[str, str]] = set()
+        self._image_url_completed: set[tuple[str, str]] = set()
+        self._image_url_downloads: dict[int, tuple[str, str]] = {}
+        self._image_url_context: dict[tuple[str, str], ImageOrigin] = {}
+        self._preview_identity: dict[Path, _PreviewIdentity] = {}
+        self.last_metadata_error = ""
         profile.setDownloadPath(str(self.root))
         profile.downloadRequested.connect(self._on_download_requested)
 
@@ -67,64 +79,79 @@ class ImageSiteDownloads(QtCore.QObject):
         if not self._active and self._temporary_workspace is not None:
             self._temporary_workspace.cleanup()
             self._temporary_workspace = None
+            self._preview_identity.clear()
+            self._image_url_context.clear()
 
-    def _destination(self, provider: str, proposed_name: str, suffix: str) -> Path:
+    def _destination(
+        self, provider: str, proposed_name: str, suffix: str, origin: ImageOrigin | None = None
+    ) -> Path:
         folder = self.root / sanitize_piece(provider)
         folder.mkdir(parents=True, exist_ok=True)
-        stem = Path(proposed_name).stem
-        try:
-            validate_image_stem(stem, suffix=suffix)
-        except ValueError:
-            stem = sanitize_piece(stem)[:100]
-        candidate = folder / f"{stem}{suffix}"
-        number = 2
+        folder = folder.resolve()
+        origin = origin or ImageOrigin(provider)
+        title = origin.title if descriptive_title(origin.title, provider) else proposed_name
+        if not descriptive_title(title, provider):
+            title = ""
+        origin = ImageOrigin(provider, origin.prompt, title, origin.observed_at_utc or utc_now())
+        base, fallback = image_stem(provider, title, origin.prompt)
+        number = 1
+        candidate = folder / f"{numbered_stem(base, number, suffix, fallback)}{suffix}"
         while candidate.exists() or candidate in self._reserved:
-            candidate = folder / f"{stem} ({number}){suffix}"
             number += 1
+            candidate = folder / f"{numbered_stem(base, number, suffix, fallback)}{suffix}"
         self._reserved.add(candidate)
+        self._preview_identity[candidate] = _PreviewIdentity(origin, base, fallback)
         return candidate
 
-    def download_to_archive(self, page: QWebEnginePage, url: QtCore.QUrl) -> bool:
-        """Download a dragged site image, then request an Archive copy."""
+    def stage_url(self, page: QWebEnginePage, url: QtCore.QUrl, *, origin: ImageOrigin | None = None) -> bool:
+        """Download one provider image into the unsaved preview area."""
         if url.scheme().lower() not in {"blob", "http", "https"}:
             raise ValueError("This image cannot be downloaded from the page.")
         provider = str(page.property("imageProvider") or "Website")
         key = (provider, url.toString())
-        if key in self._archive_inflight:
+        if key in self._image_url_pending or key in self._image_url_inflight or key in self._image_url_completed:
             return False
-        self._archive_pending.add(key)
-        self._archive_inflight.add(key)
-        QtCore.QTimer.singleShot(30000, lambda: self._expire_archive_request(key))
-        page.download(url)
+        self._image_url_pending.add(key)
+        if origin is not None:
+            self._image_url_context[key] = origin
+        def expire() -> None:
+            if key in self._image_url_pending:
+                self._image_url_pending.discard(key)
+                self._image_url_context.pop(key, None)
+        QtCore.QTimer.singleShot(30000, expire)
+        try:
+            page.download(url)
+        except Exception:
+            self._image_url_pending.discard(key)
+            self._image_url_context.pop(key, None)
+            raise
         return True
-
-    def _expire_archive_request(self, key: tuple[str, str]) -> None:
-        if key in self._archive_pending:
-            self._archive_pending.discard(key)
-            self._archive_inflight.discard(key)
 
     def _on_download_requested(self, download: QWebEngineDownloadRequest) -> None:
         page = download.page()
         provider = str(page.property("imageProvider") or "Website") if page else "Website"
-        archive_key = (provider, download.url().toString())
-        archive_requested = archive_key in self._archive_pending
-        self._archive_pending.discard(archive_key)
+        image_key = (provider, download.url().toString())
+        self._image_url_pending.discard(image_key)
+        origin = self._image_url_context.pop(image_key, None)
+        if origin is None and page is not None and hasattr(page, "take_image_download_context"):
+            context = page.take_image_download_context()
+            if context:
+                origin = ImageOrigin(
+                    provider, str(context.get("prompt") or ""), str(context.get("title") or ""),
+                    str(context.get("observed_at_utc") or ""),
+                )
         raw_name = re.split(r"[\\/]", download.suggestedFileName())[-1]
         suffix = Path(raw_name).suffix.lower()
         mime = download.mimeType().lower().split(";", 1)[0].strip()
         if download.isSavePageDownload() or (suffix not in _IMAGE_SUFFIXES and mime not in _MIME_SUFFIXES):
-            if archive_requested:
-                self._archive_inflight.discard(archive_key)
             download.cancel()
             self.failed.emit("This was not a supported image download. Use the site's image Download action.")
             return
         if suffix not in _IMAGE_SUFFIXES:
             suffix = _MIME_SUFFIXES[mime]
         try:
-            target = self._destination(provider, raw_name or "generated-image", suffix)
+            target = self._destination(provider, raw_name or "generated-image", suffix, origin)
         except OSError as exc:
-            if archive_requested:
-                self._archive_inflight.discard(archive_key)
             download.cancel()
             self.failed.emit(f"Could not prepare an image preview: {exc}")
             return
@@ -132,8 +159,8 @@ class ImageSiteDownloads(QtCore.QObject):
         download.setDownloadFileName(target.name)
         download_id = download.id()
         self._active[download_id] = download
-        if archive_requested:
-            self._archive_downloads[download_id] = archive_key
+        self._image_url_inflight.add(image_key)
+        self._image_url_downloads[download_id] = image_key
         self.activeChanged.emit(self.active_count)
         download.receivedBytesChanged.connect(
             lambda item=download, name=target.name: self._on_progress(item, name, item.receivedBytes())
@@ -165,20 +192,20 @@ class ImageSiteDownloads(QtCore.QObject):
         }:
             return
         self._active.pop(item.id(), None)
-        archive_key = self._archive_downloads.pop(item.id(), None)
-        archive_requested = archive_key is not None
-        if archive_key is not None:
-            self._archive_inflight.discard(archive_key)
+        image_key = self._image_url_downloads.pop(item.id(), None)
+        if image_key is not None:
+            self._image_url_inflight.discard(image_key)
         self._reserved.discard(path)
         self.activeChanged.emit(self.active_count)
         if state == QWebEngineDownloadRequest.DownloadState.DownloadCompleted:
             reader = QtGui.QImageReader(str(path))
             if not reader.read().isNull():
+                if image_key is not None:
+                    self._image_url_completed.add(image_key)
                 self._log(f"image preview ready from {provider}: {path}")
                 self.imageSaved.emit(provider, str(path))
-                if archive_requested:
-                    self.archiveReady.emit(provider, str(path))
             else:
+                self._preview_identity.pop(path, None)
                 del reader
                 try:
                     path.unlink(missing_ok=True)
@@ -186,11 +213,13 @@ class ImageSiteDownloads(QtCore.QObject):
                     pass
                 self.failed.emit(f"Downloaded {path.name}, but it is not a decodable image.")
         elif state == QWebEngineDownloadRequest.DownloadState.DownloadCancelled:
+            self._preview_identity.pop(path, None)
             self.statusChanged.emit(f"Download canceled: {path.name}")
         else:
+            self._preview_identity.pop(path, None)
             self.failed.emit(f"Download interrupted: {item.interruptReasonString() or path.name}")
 
-    def import_file(self, provider: str, source: Path) -> Path:
+    def import_file(self, provider: str, source: Path, *, origin: ImageOrigin | None = None) -> Path:
         """Copy a Codex result or an external image into private preview storage."""
         source = Path(source)
         if not source.is_file() or source.suffix.lower() not in _IMAGE_SUFFIXES:
@@ -198,18 +227,37 @@ class ImageSiteDownloads(QtCore.QObject):
         reader = QtGui.QImageReader(str(source))
         if reader.read().isNull():
             raise ValueError("The selected file is not a decodable image.")
-        target = self._destination(provider, source.name, source.suffix.lower())
+        target = self._destination(provider, source.name, source.suffix.lower(), origin)
         try:
             shutil.copyfile(source, target)
         except OSError:
             self._reserved.discard(target)
+            self._preview_identity.pop(target, None)
             raise
         self._reserved.discard(target)
         self._log(f"image preview imported from {provider}: {target}")
         self.imageSaved.emit(provider, str(target))
         return target
 
-    def save_to_archive(self, source: Path, name: str) -> Path:
+    def import_image(self, provider: str, image: QtGui.QImage) -> Path:
+        """Stage image data supplied by a native drop."""
+        if image.isNull():
+            raise ValueError("The dropped image could not be decoded.")
+        target = self._destination(provider, "Dropped image.png", ".png")
+        try:
+            if not image.save(str(target), "PNG"):
+                raise OSError("Could not prepare the dropped image preview.")
+        except OSError:
+            target.unlink(missing_ok=True)
+            self._preview_identity.pop(target, None)
+            raise
+        finally:
+            self._reserved.discard(target)
+        self._log(f"image preview imported from {provider}: {target}")
+        self.imageSaved.emit(provider, str(target))
+        return target
+
+    def save_to_archive(self, source: Path, name: str, *, auto_name: bool = False) -> Path:
         """Copy an unsaved preview to the configured Icon Images archive."""
         source = Path(source).resolve(strict=True)
         if not source.is_relative_to(self.root.resolve()):
@@ -221,13 +269,32 @@ class ImageSiteDownloads(QtCore.QObject):
         if GenOps.is_archive_storage_paused():
             raise RuntimeError("Archive Storage is busy. Try again shortly.")
         paths = Gen2.EnginePaths.from_archive_storage_root(archive_root)
-        destination, collision = Gen2.mirror_copy_to_archive_sources_ex(
-            source, paths=paths, target_name=f"{stem}{source.suffix.lower()}",
-        )
-        if collision:
-            raise FileExistsError(f"Archive already contains a different image named {destination.name}.")
+        suffix = source.suffix.lower()
+        identity = self._preview_identity.get(source)
+        if auto_name and identity is not None:
+            stem = identity.base_stem
+        for number in range(1, 1001):
+            if auto_name and identity is not None:
+                candidate = numbered_stem(stem, number, suffix, identity.fallback)
+            else:
+                addition = "" if number == 1 else f" ({number})"
+                candidate = stem[:MAX_NAME_LEN - len(suffix) - len(addition)] + addition
+            destination, collision = Gen2.mirror_copy_to_archive_sources_ex(
+                source, paths=paths, target_name=f"{candidate}{suffix}",
+            )
+            if not collision:
+                break
+        else:
+            raise FileExistsError("Archive has too many images with this name.")
         if destination is None or not destination.is_file():
             raise OSError("Could not copy the image into Archive Storage.")
+        self.last_metadata_error = ""
+        if identity is not None:
+            try:
+                save_record(destination, identity.origin)
+            except OSError as exc:
+                self.last_metadata_error = str(exc)
+                self._log(f"WARN: image metadata could not be saved for {destination.name}: {exc}")
         self._log(f"image added to archive: {destination}")
         try:
             GenOps.publish_app_event("archive-storage-changed", str(destination))

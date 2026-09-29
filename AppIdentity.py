@@ -24,7 +24,7 @@ APP_ORG: Final[str] = "InfiniWorks"
 # Keep this settings namespace and its derived Windows AppUserModelID stable.
 APP_NAME: Final[str] = "IconMaker"
 APP_VERSION_SERIES: Final[str] = "1.0"
-APP_VERSION_BASE_PATCH: Final[int] = 1
+APP_VERSION_BASE_PATCH: Final[int] = 2
 APP_COPYRIGHT: Final[str] = "InfiniWorks"
 APP_DESCRIPTION: Final[str] = "Managed archive-based icon conversion workflow."
 APP_EXECUTABLE_NAME: Final[str] = "IconMaker.exe"
