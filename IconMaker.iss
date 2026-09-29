@@ -1,4 +1,4 @@
-#define AppVersion "1.0.2"
+#define AppVersion "1.0.3"
 
 [Setup]
 AppId={{05A985C7-DBA1-447B-B28A-90EF582B82C5}
@@ -12,7 +12,7 @@ PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 OutputDir=build\release-installer
 OutputBaseFilename=IconForge-Setup-{#AppVersion}
-SetupIconFile=assets\folder_icons\iconmaker.ico
+SetupIconFile=assets\icocoin.ico
 UninstallDisplayIcon={app}\IconMaker.exe
 Compression=lzma2
 SolidCompression=yes

@@ -35,7 +35,7 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     version='IconMaker.versioninfo',
-    icon=['assets\\folder_icons\\iconmaker.ico'],
+    icon=['assets\\icocoin.ico'],
 )
 coll = COLLECT(
     exe,

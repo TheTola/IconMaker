@@ -51,12 +51,12 @@ def ICONS_DIR() -> Path:
 # until lookup so packaged and source runs can share the same config surface.
 APP_TITLE_IMAGE_OVERRIDE = "assets/iconner.png"
 APP_ICON_MAC_OVERRIDE = "assets/IconMaker.icns"
-APP_ICON_ICO_OVERRIDE = "assets/iconner.ico"
+APP_ICON_ICO_OVERRIDE = "assets/icocoin.ico"
 
 ASSET_DIR_CANDIDATES = ("assets", "Assets")
 APP_TITLE_PNG_NAME = "iconner.png"
 APP_ICON_MAC_NAME = "IconMaker.icns"
-APP_ICON_ICO_NAME = "iconner.ico"
+APP_ICON_ICO_NAME = "icocoin.ico"
 
 
 def _dev_dir() -> Path:
