@@ -1,0 +1,7 @@
+Version: 1.0.3
+Source commit: d7fe4afc793c965e07f5ed1a8332438410b21c80
+Installer: IconForge-Setup-1.0.3.exe
+Size: 175844034 bytes
+SHA-256: 1232CDD9DC9AD449C064051999C284728890C073890CFE13047A7156F3CBC84E
+Signed: no
+Test-installed: yes (per-user installation; UI and tray launched)
